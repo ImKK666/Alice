@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "request": "launch", // 请求类型，"launch" 用于启动程序 [8]
+        "name": "Deno: Debug Current File", // 在调试配置下拉菜单中显示的名称 [8]
+        "type": "node", // 调试器类型，对于 Deno 扩展，使用 "node" 是正确的 [5, 8]
+        "program": "${file}", // 要运行的程序，`${file}` 表示当前打开的文件 [8]
+        "cwd": "${workspaceFolder}", // 当前工作目录 [8]
+        "runtimeExecutable": "deno", // 要使用的运行时，设置为 "deno" [8, 9]
+        "runtimeArgs": [
+          "run", // Deno 命令：运行脚本
+          "--inspect-brk", // 启动调试模式并在第一行暂停，等待调试器连接 [8, 10]
+          "--allow-all", // 授予所有权限 (方便调试，生产环境应精细控制) [8]
+          "--unstable-kv"
+		  // 或更精细的权限，例如: "--allow-net", "--allow-read", "--allow-env"
+        ],
+        "attachSimplePort": 9229 // Deno 调试器默认端口 [8, 10]
+      }
+    ]
+  }

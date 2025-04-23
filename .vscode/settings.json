@@ -1,0 +1,11 @@
+{
+    "deno.enable": true,
+    "deno.lint": true, // 启用 Deno linter
+    "editor.formatOnSave": true,
+    "[typescript]": {
+      "editor.defaultFormatter": "denoland.vscode-deno"
+    },
+    "[javascript]": {
+      "editor.defaultFormatter": "denoland.vscode-deno"
+    }
+  }
