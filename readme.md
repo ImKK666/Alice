@@ -53,8 +53,8 @@ Deno Workers) + LLM (Any).
 
 2. **克隆仓库:**
    ```bash
-   git clone <your-repo-url>
-   cd <your-repo-name>
+   git clone https://github.com/ImKK666/Alice
+   cd Alice
    ```
 
 3. **配置环境变量:**
