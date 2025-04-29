@@ -1,3 +1,0 @@
-[submodule "deno-jieba"]
-	path = deno-jieba
-	url = https://github.com/kayac-chang/deno-jieba.git
