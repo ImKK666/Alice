@@ -1,4 +1,4 @@
-# 🌌 爱丽丝 AI 核心 (Alice AI Core) - 高级认知架构
+# 🌌 爱丽丝 AI 核心 (Alice AI Core) - 高级认知架构 (v8.1 - LLM驱动评分)
 
 [![Deno](https://img.shields.io/badge/Runtime-Deno%20%5E1.40-blueviolet?logo=deno)](https://deno.land)
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript%205.x-blue?logo=typescript)](https://www.typescriptlang.org/)
@@ -26,6 +26,7 @@
 * **多模态交互接口 (Multiple Interaction Interfaces):** 支持命令行 (CLI) 与 Discord Bot 两种主要交互模式。
 * **涌现式人格模拟 (Emergent Personality Simulation):** 利用 Prompt 元编程 (Meta-Programming) 和状态依赖，模拟复杂、动态且具有一致性的 AI 人格（包含 Tsundere 等特定模式）。
 * **外部停用词加载:** 支持从外部 JSON 文件加载停用词列表，方便定制和维护文本处理规则。
+* **LLM驱动的消息重要性评估 (LLM-Driven Message Scoring):** **(新)** 利用 `memory_processor` 的 LLM 分析结果（记忆类型、重要性评分、情感等）来判断 Discord 频道消息是否值得处理，取代了基于固定关键词列表的评分机制。
 * **[进化] 情感状态表征与建模 (Affective State Representation & Modeling):** 记忆载体 (Payload) 扩展情感维度，结合 LLM 进行情感分析与存储，实现情感敏感的记忆检索与响应生成。
 * **[进化] 计算心智漫游模拟 (Computational Analogue of Mind-Wandering):** 模拟大脑默认网络 (DMN) 活动，在低认知负荷期间触发自发性思维链，生成概念连接、模式识别、隐喻、反思等洞见 (Insights)，并将其存储为内省记忆。
 * **[进化] 主观时间知觉建模 (Subjective Temporal Perception Modeling):** 引入情感加权的时间扭曲因子和记忆衰减模型，使 AI 能够表达相对和主观的时间感。
@@ -38,12 +39,12 @@
 系统采用模块化设计，核心组件协同工作：
 
 1.  **主控制流 (`main.ts`):** 作为认知核心的协调器，编排信息处理、状态更新和响应生成的完整认知循环。负责加载初始配置和停用词。
-2.  **记忆编码器 (`memory_processor.ts`):** 负责将原始输入转化为结构化、情感标记的记忆表征。
+2.  **记忆编码器 (`memory_processor.ts`):** **(已重构)** 包含可复用的 LLM 分析核心 (`analyzeMessageForMemory`)，负责将原始输入转化为结构化、情感标记的记忆表征，并供其他模块（如 Discord 接口评分）调用。
 3.  **向量记忆库接口 (`qdrant_client.ts`):** 提供与 Qdrant 向量数据库的高级交互接口。
 4.  **语言生成核心 (`llm.ts`):** 与底层 LLM 交互。
 5.  **语义向量化引擎 (`embeddings.ts`):** 将文本映射到高维语义空间。
 6.  **相关性精炼器 (`reranker.ts`):** 优化信息检索的相关性排序。
-7.  **记忆巩固后台 (`ltm_worker.ts`):** 异步处理长期记忆的编码与存储。
+7.  **记忆巩固后台 (`ltm_worker.ts`):** 异步处理长期记忆的编码与存储，调用 `memory_processor`。
 8.  **高级认知模块 (新增):**
     * `mind_wandering.ts`: 内省与洞见生成。
     * `time_perception.ts`: 主观时间与记忆动力学。
@@ -52,7 +53,7 @@
     * `social_dynamics.ts`: 关系建模与社交适应。
 9.  **交互前端接口:**
     * `cli_interface.ts`: 命令行协议接口。
-    * `discord_interface.ts`: Discord 实时通信接口。
+    * `discord_interface.ts`: **(已更新)** Discord 实时通信接口，现使用 LLM 分析结果进行消息重要性评分。
 10. **全局配置 (`config.ts`):** 参数化系统行为。
 11. **状态持久化层:** 利用 Deno KV 实现工作记忆 (STM) 和各认知模块的动态状态持久化。
 12. **工具函数 (`utils.ts` 或内置于 `main.ts`):** 包含如停用词加载等辅助功能。
@@ -66,7 +67,7 @@
     * **Embeddings & Reranker:** BGE 模型系列 (通过 SiliconFlow API 或本地服务)
 * **向量存储与检索:** Qdrant
 * **工作记忆 & 状态持久化:** Deno KV (`--unstable`)
-* **主要依赖库:** `@langchain/openai`, `discord.js@14`, `@qdrant/js-client-rest`, Deno `std`, Deno `dotenv`
+* **主要依赖库:** `@langchain/openai`, `discord.js@14`, `@qdrant/js-client-rest`, Deno `std`, Deno `dotenv` (参考 `deno.json`)
 
 ## 🛠️ 部署与配置 (Deployment & Configuration)
 
@@ -84,10 +85,10 @@
 
 3.  **停用词文件:**
     * 确保在项目根目录下有一个 `data` 文件夹。
-    * 将你的中文停用词库文件命名为 `stopwords-zh.json` 并放置在 `./data/` 目录下。文件格式应为 JSON 数组，例如 `["、", "。", "的", "了"]`。
+    * 将你的中文停用词库文件命名为 `stopwords-zh.json` 并放置在 `./data/` 目录下。文件格式应为 JSON 数组。
 
 4.  **环境配置:**
-    * 创建 `.env` 文件（可参考 `.env.example` 或先前提供的示例）。
+    * 创建 `.env` 文件（可参考 `.env.example`）。
     * 填入所有必需的 API 密钥、服务 URL、用户 ID 等。查阅 `src/config.ts` 了解所有可配置参数。
 
 5.  **启动系统:**
@@ -123,9 +124,9 @@
 通过 Discord Bot 提供服务:
 
 * **直接消息 (DM):** 始终处理。
-* **频道提及 (@Bot):** 始终处理。
+* **频道提及 (@Bot 或机器人角色):** 始终处理。
 * **与指定"所有者" (Owner) 交互:** 根据 `DISCORD_ALWAYS_REPLY_TO_OWNER` 配置决定是否始终处理。
-* **频道常规消息:** 启动基于内容、上下文和元数据的 **动态处理阈值评估 (`calculateMessageImportanceScore`)**，仅当消息重要性评分超过预设阈值 (`DISCORD_PROCESSING_THRESHOLD`) 时触发 RAG 核心处理。
+* **频道常规消息:** **(新)** 启动基于 **LLM 分析结果** 的重要性评分 (`calculateMessageImportanceScore`)。仅当消息评分超过预设阈值 (`DISCORD_PROCESSING_THRESHOLD`) 时触发 RAG 核心处理。不再依赖固定的关键词列表进行评分。
 
 ## ⚙️ 系统参数化 (`.env`)
 
@@ -135,7 +136,7 @@
 * 使用的 AI 模型标识符。
 * Qdrant 数据库连接信息。
 * RAG 流程参数（检索数量、重排序阈值等）。
-* Discord 接口参数（处理阈值、特定用户 ID、昵称、关键词等）。
+* Discord 接口参数（**处理阈值 (基于LLM评分)**、特定用户 ID 等）。
 * 所有高级认知模块（时间、语言、具身、社交）的启用开关及行为参数。
 
 请参考 `src/config.ts` 及 `.env` 示例获取完整的参数列表和说明。
@@ -151,5 +152,3 @@
 * **自适应人格演化:** 基于长期交互历史实现人格特征的动态演化。
 
 我们欢迎对本项目感兴趣的研究者和开发者进行交流、提出建议或参与贡献，共同探索人工智能意识与交互的未来疆域。
-
----

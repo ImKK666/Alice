@@ -1,6 +1,5 @@
-// src/memory_processor.ts
+// src/memory_processor.ts (修改后 - 提取分析逻辑)
 
-// 保持原有导入不变
 import { llm } from "./llm.ts";
 import { embeddings } from "./embeddings.ts";
 import {
@@ -17,43 +16,50 @@ import { config } from "./config.ts";
  */
 export interface ChatMessageInput {
   userId: string; // 发送消息的用户 ID
-  contextId: string; // 消息所在的上下文 ID (群组 ID, 私聊 ID 等)
+  contextId: string; // 消息所在的上下文 ID (群组 ID, 私聊 ID 等) - 注意：这里可能是原始来源ID或RAG ID
   text: string; // 消息的文本内容
   messageId?: string; // (可选) 原始消息的唯一 ID
   timestamp?: number; // (可选) 消息的原始时间戳 (若无则使用处理时的时间)
 }
 
 /**
- * (核心函数) 处理单条输入消息并存储为记忆
- *
- * 实现逻辑:
- * 1. (可选) 初步过滤，判断消息是否值得记忆。
- * 2. 使用 LLM 分析消息内容，提取关键信息，判断类型、重要性和情感。
- * 3. 决定用于 Embedding 的最终文本内容。
- * 4. 调用 Embedding 模型生成向量。
- * 5. 生成唯一的 Point ID (UUID)。
- * 6. 构建 MemoryPointStruct 对象。
- * 7. 调用 upsertMemoryPoints 存储到 Qdrant。
+ * 定义 LLM 分析结果的结构
+ */
+export interface MessageAnalysisResult {
+  memory_type: MemoryType;
+  importance_score: number; // 1-5
+  processed_text_content: string;
+  emotional_valence: number; // -1.0 到 1.0
+  emotional_arousal: number; // 0.0 到 1.0
+  emotional_dimensions: { [key in EmotionDimension]?: number };
+  associative_triggers: string[];
+  requires_embedding: boolean; // 是否需要生成向量 (基于分析结果判断)
+}
+
+/**
+ * (新增函数) 使用 LLM 分析单条消息，提取记忆相关信息和情感。
+ * 这个函数现在是核心的分析逻辑，可以被其他模块复用。
  *
  * @param message 输入的聊天消息对象
- * @returns Promise<void>
+ * @returns Promise<MessageAnalysisResult> 包含分析结果的对象
+ * @throws 如果 LLM 调用或 JSON 解析失败，会抛出错误
  */
-export async function processAndStoreMessage(
+export async function analyzeMessageForMemory(
   message: ChatMessageInput,
-): Promise<void> {
+): Promise<MessageAnalysisResult> {
   console.log(
-    `[MemoryProcessor] 🔍 开始处理消息: 用户 ${message.userId} 在上下文 ${message.contextId}`,
+    `[MemoryProcessor][分析] 🧠 开始分析消息: 用户 ${message.userId} 在上下文 ${message.contextId}`,
+  );
+  console.log(
+    `[MemoryProcessor][分析]   消息内容预览: "${
+      message.text.substring(0, 70)
+    }..."`,
   );
 
-  // --- 1. (可选) 初步过滤 ---
-  if (message.text.trim().length < 5) { // 示例：过滤掉小于5个字符的消息
-    console.log("[MemoryProcessor] ➖ 消息过短，跳过存储。");
-    return;
-  }
-
   // --- 判断当前的人格/上下文模式 (示例) ---
-  const isProfessionalContext = message.contextId.startsWith("work_") ||
-    message.contextId.startsWith("DM_"); // 判断是否为工作相关或私聊
+  // 注意：这里的 contextId 可能是原始来源 ID 或 RAG ID，取决于调用者
+  // 如果需要更精确的模式判断，可能需要传递更多上下文信息
+  const isProfessionalContext = message.contextId.includes("work_");
   const personaMode = isProfessionalContext ? "专业的秘书" : "傲娇的朋友"; // 根据上下文决定人格
   const currentDate = new Date().toLocaleString("zh-CN", { // 使用 zh-CN 提高兼容性
     timeZone: "Asia/Taipei", // 保留台北时区
@@ -66,7 +72,7 @@ export async function processAndStoreMessage(
     hour12: false,
   });
 
-  // --- 2. 构建分析指令 (Prompt) 新版，包含情感分析 ---
+  // --- 构建分析指令 (Prompt) ---
   const analysisPrompt = `
 你是一个 AI 助手，负责分析收到的聊天消息，以决定哪些信息需要存入你的长期记忆中，同时进行情感分析。
 当前背景：你正在扮演一个 **${personaMode}** 的角色。
@@ -119,205 +125,246 @@ export async function processAndStoreMessage(
   "associative_triggers": ["截止日期", "报告", "周五", "提醒", "提交"]
 }
 
-{
-  "memory_type": "emotional_response",
-  "importance_score": 4,
-  "relevant_content": "用户 ${message.userId} 对项目成功感到非常兴奋和自豪。",
-  "emotional_valence": 0.9,
-  "emotional_arousal": 0.8,
-  "emotional_dimensions": {"joy": 0.9, "sadness": 0.0, "anger": 0.0, "fear": 0.0, "surprise": 0.3, "disgust": 0.0, "trust": 0.6, "anticipation": 0.7, "neutral": 0.1},
-  "associative_triggers": ["成功", "项目", "成就", "庆祝", "兴奋"]
-}
-
 请 **只返回 JSON 对象**，不要在 JSON 前后包含任何其他文字或解释。
 `;
 
-  // 定义用于存储分析结果的变量
-  let memoryType: MemoryType = "conversation_turn"; // 默认类型
-  let processedTextContent = message.text; // 默认使用原文
-  let importanceScore: number | undefined = 2; // 默认重要性
-  let emotionalValence: number | undefined = 0; // 默认情感效价 (中性)
-  let emotionalArousal: number | undefined = 0; // 默认情感唤醒度 (平静)
-  let emotionalDimensions: { [key in EmotionDimension]?: number } = {
-    "neutral": 1,
-  }; // 默认情感维度
-  let associativeTriggers: string[] | undefined = []; // 默认关联触发词
-  const requiresEmbedding = true; // 默认需要生成向量
+  // ---- 调用 LLM 并解析 ----
+  // 注意：这里可能抛出错误，由调用者处理
+  const llmResponse = await llm.invoke(analysisPrompt);
 
-  try {
-    console.log("[MemoryProcessor] 🧠 正在调用 LLM 分析消息...");
-    const llmResponse = await llm.invoke(analysisPrompt);
+  let analysisResultJson: {
+    memory_type: string;
+    importance_score: number;
+    relevant_content: string;
+    emotional_valence: number;
+    emotional_arousal: number;
+    emotional_dimensions: { [key in EmotionDimension]?: number };
+    associative_triggers: string[];
+  };
 
-    // 定义预期LLM返回的完整结构
-    let analysisResult: {
-      memory_type: string;
-      importance_score: number;
-      relevant_content: string;
-      emotional_valence: number;
-      emotional_arousal: number;
-      emotional_dimensions: { [key in EmotionDimension]?: number };
-      associative_triggers: string[];
-    };
+  const responseContent = typeof llmResponse === "string"
+    ? llmResponse
+    : (llmResponse.content as string);
 
-    const responseContent = typeof llmResponse === "string"
-      ? llmResponse
-      : (llmResponse.content as string);
-
-    if (!responseContent) {
-      throw new Error("❌ LLM 返回了空内容。");
-    }
-
-    // 清理可能的Markdown代码块标记
-    const cleanedContent = responseContent.trim().replace(
-      /^```json\s*|```$/g,
-      "",
-    );
-
-    try {
-      // 解析JSON
-      analysisResult = JSON.parse(cleanedContent);
-      // 验证必要字段是否存在
-      if (
-        !analysisResult.memory_type ||
-        analysisResult.importance_score === undefined ||
-        !analysisResult.relevant_content ||
-        analysisResult.emotional_valence === undefined ||
-        analysisResult.emotional_arousal === undefined ||
-        !analysisResult.emotional_dimensions ||
-        !analysisResult.associative_triggers
-      ) {
-        // 如果缺少字段，抛出错误，会在下面的catch块中处理
-        throw new Error(
-          "❌ 解析出的 JSON 对象缺少必要的字段。",
-        );
-      }
-    } catch (parseError) {
-      // 处理JSON解析错误
-      console.error(
-        `[MemoryProcessor] ❌ 解析 LLM 返回的 JSON 时出错: ${parseError}`,
-      );
-      console.error(
-        "[MemoryProcessor] 📝 LLM 原始返回内容 (清洁后):",
-        cleanedContent,
-      );
-      console.error(
-        "[MemoryProcessor] 📝 LLM 原始返回内容 (未清洁):",
-        responseContent,
-      );
-      // 抛出更具体的错误，指明是解析失败
-      throw new Error(`❌ 解析 LLM JSON 响应失败: ${parseError}`);
-    }
-
-    // 将解析结果赋值给变量
-    memoryType = (analysisResult.memory_type as MemoryType) || "unknown";
-    processedTextContent = analysisResult.relevant_content || message.text; // 如果内容为空，回退到原文
-    importanceScore = analysisResult.importance_score ?? 2; // 使用默认值处理null或undefined
-    emotionalValence = analysisResult.emotional_valence ?? 0;
-    emotionalArousal = analysisResult.emotional_arousal ?? 0;
-    emotionalDimensions = analysisResult.emotional_dimensions ??
-      { "neutral": 1 };
-    associativeTriggers = analysisResult.associative_triggers ?? [];
-
-    // 验证 memory_type 是否有效
-    if (!getMemoryTypes().includes(memoryType)) {
-      console.warn(
-        `[MemoryProcessor] ⚠️ LLM 返回了一个未知的 memory_type: ${memoryType}。将使用 'unknown'。`,
-      );
-      memoryType = "unknown";
-    }
-
-    // 记录详细的分析结果
-    console.log(
-      `[MemoryProcessor] ✅ LLM 分析结果: 类型=${memoryType}, 重要性=${importanceScore}, 情感效价=${
-        emotionalValence.toFixed(2)
-      }, 情感强度=${emotionalArousal.toFixed(2)}, 内容='${
-        processedTextContent.substring(0, 50)
-      }...'`,
-    );
-    console.log(
-      `[MemoryProcessor] 🌈 情感维度分析: ${
-        Object.entries(emotionalDimensions)
-          .map(([emotion, score]) => `${emotion}=${score?.toFixed(2)}`) // 处理可能的 undefined score
-          .join(", ")
-      }`,
-    );
-    console.log(
-      `[MemoryProcessor] 🔗 关联触发词: ${associativeTriggers.join(", ")}`,
-    );
-  } catch (error) {
-    // 统一处理LLM调用或解析过程中的任何错误
-    console.error("[MemoryProcessor] ❌ LLM 分析或解析时出错:", error);
-    console.log("[MemoryProcessor] ⚠️ 将使用默认值存储原始消息。");
-    // 回退到默认值
-    memoryType = "conversation_turn";
-    processedTextContent = message.text;
-    importanceScore = 1; // 分析失败，标记为低重要性
-    emotionalValence = 0;
-    emotionalArousal = 0;
-    emotionalDimensions = { "neutral": 1 };
-    associativeTriggers = [];
+  if (!responseContent) {
+    throw new Error("[MemoryProcessor][分析] LLM 返回了空内容。");
   }
 
-  // --- 3. & 4. 生成 Embedding 向量 ---
+  const cleanedContent = responseContent.trim().replace(
+    /^```json\s*|```$/g,
+    "",
+  );
+
+  try {
+    analysisResultJson = JSON.parse(cleanedContent);
+    // 验证必要字段
+    if (
+      !analysisResultJson.memory_type ||
+      analysisResultJson.importance_score === undefined ||
+      !analysisResultJson.relevant_content ||
+      analysisResultJson.emotional_valence === undefined ||
+      analysisResultJson.emotional_arousal === undefined ||
+      !analysisResultJson.emotional_dimensions ||
+      !analysisResultJson.associative_triggers
+    ) {
+      throw new Error("解析出的 JSON 对象缺少必要的字段。");
+    }
+  } catch (parseError) {
+    console.error(
+      `[MemoryProcessor][分析] ❌ 解析 LLM 返回的 JSON 时出错: ${parseError}`,
+    );
+    console.error(
+      "[MemoryProcessor][分析] 📝 LLM 原始返回内容 (清洁后):",
+      cleanedContent,
+    );
+    // 重新抛出错误，让调用者知道分析失败
+    throw new Error(`解析 LLM JSON 响应失败: ${parseError.message}`);
+  }
+
+  // ---- 整理分析结果 ----
+  let memoryType: MemoryType = (analysisResultJson.memory_type as MemoryType) ||
+    "unknown";
+  // 验证 memory_type 是否有效
+  if (!getMemoryTypes().includes(memoryType)) {
+    console.warn(
+      `[MemoryProcessor][分析] ⚠️ LLM 返回了一个未知的 memory_type: ${memoryType}。将使用 'unknown'。`,
+    );
+    memoryType = "unknown";
+  }
+  const processedTextContent = analysisResultJson.relevant_content ||
+    message.text;
+  const importanceScore = analysisResultJson.importance_score ?? 2;
+  const emotionalValence = analysisResultJson.emotional_valence ?? 0;
+  const emotionalArousal = analysisResultJson.emotional_arousal ?? 0;
+  const emotionalDimensions = analysisResultJson.emotional_dimensions ??
+    { "neutral": 1 };
+  const associativeTriggers = analysisResultJson.associative_triggers ?? [];
+
+  // 简单的规则判断是否需要 embedding（例如，闲聊且不重要可能不需要）
+  const requiresEmbedding = !(memoryType === "conversation_turn" &&
+    importanceScore <= 2);
+
+  // ---- 返回结构化结果 ----
+  const analysisResult: MessageAnalysisResult = {
+    memory_type: memoryType,
+    importance_score: importanceScore,
+    processed_text_content: processedTextContent,
+    emotional_valence: emotionalValence,
+    emotional_arousal: emotionalArousal,
+    emotional_dimensions: emotionalDimensions,
+    associative_triggers: associativeTriggers,
+    requires_embedding: requiresEmbedding,
+  };
+
+  // ---- 记录详细的分析结果 ----
+  console.log(
+    `[MemoryProcessor][分析] ✅ LLM 分析结果: 类型=${analysisResult.memory_type}, 重要性=${analysisResult.importance_score}, 情感效价=${
+      analysisResult.emotional_valence.toFixed(2)
+    }, 情感强度=${analysisResult.emotional_arousal.toFixed(2)}, 内容='${
+      analysisResult.processed_text_content.substring(0, 50)
+    }...'`,
+  );
+  // (可选) 打印更详细的情感和触发词日志
+  console.log(
+    `[MemoryProcessor][分析] 🌈 情感维度: ${
+      JSON.stringify(analysisResult.emotional_dimensions)
+    }`,
+  );
+  console.log(
+    `[MemoryProcessor][分析] 🔗 触发词: ${
+      analysisResult.associative_triggers.join(", ")
+    }`,
+  );
+
+  return analysisResult;
+}
+
+/**
+ * (核心函数 - 修改版) 处理单条输入消息并存储为记忆
+ * 现在调用 analyzeMessageForMemory 获取分析结果。
+ *
+ * @param message 输入的聊天消息对象
+ * @returns Promise<void>
+ * @throws 如果 LTM 存储过程中出现无法处理的错误
+ */
+export async function processAndStoreMessage(
+  message: ChatMessageInput,
+): Promise<void> {
+  console.log(
+    `[MemoryProcessor][存储] 🔍 开始处理消息 LTM 存储: 用户 ${message.userId} 在上下文 ${message.contextId}`,
+  );
+
+  // --- 1. 初步过滤 ---
+  if (message.text.trim().length < 5) {
+    console.log("[MemoryProcessor][存储] ➖ 消息过短，跳过 LTM 存储。");
+    return;
+  }
+
+  let analysisResult: MessageAnalysisResult;
+  try {
+    // --- 2. 调用分析函数获取结果 ---
+    // 注意：这里的 message.contextId 可能是原始来源 ID，LLM 分析时会用到
+    analysisResult = await analyzeMessageForMemory(message);
+  } catch (analysisError) {
+    // 如果 LLM 分析失败，决定是否仍要存储原始信息
+    console.error(
+      "[MemoryProcessor][存储] ❌ LLM 分析失败，无法获取结构化信息:",
+      analysisError,
+    );
+    // 可以选择在这里返回，或者继续存储一个标记为 'unknown' 的原始消息
+    console.warn(
+      "[MemoryProcessor][存储] ⚠️ 分析失败，将尝试存储原始消息（类型: unknown）。",
+    );
+    analysisResult = {
+      memory_type: "unknown", // 标记为未知
+      importance_score: 1, // 标记为不重要
+      processed_text_content: message.text, // 使用原始内容
+      emotional_valence: 0,
+      emotional_arousal: 0,
+      emotional_dimensions: { "neutral": 1 },
+      associative_triggers: [],
+      requires_embedding: true, // 仍然尝试生成 embedding
+    };
+    // 继续执行后续步骤
+  }
+
+  // --- 3. & 4. 生成 Embedding 向量 (如果需要) ---
   let vector: number[] = [];
-  if (requiresEmbedding) {
+  if (analysisResult.requires_embedding) {
     try {
-      console.log("[MemoryProcessor] 🤖 正在生成文本的嵌入向量...");
-      vector = await embeddings.embedQuery(processedTextContent);
+      console.log("[MemoryProcessor][存储] 🤖 正在生成文本的嵌入向量...");
+      vector = await embeddings.embedQuery(
+        analysisResult.processed_text_content, // 使用分析后的文本
+      );
       console.log(
-        `[MemoryProcessor] ✅ 嵌入向量生成完成，维度: ${vector.length}`,
+        `[MemoryProcessor][存储] ✅ 嵌入向量生成完成，维度: ${vector.length}`,
       );
     } catch (error) {
-      console.error("[MemoryProcessor] ❌ 生成嵌入向量时出错:", error);
-      // 抛出错误，让上层或Worker捕获并处理
-      throw new Error(`❌ 无法为消息生成嵌入向量: ${error}`);
+      console.error("[MemoryProcessor][存储] ❌ 生成嵌入向量时出错:", error);
+      // 向量生成失败，但可能仍然希望存储无向量的记忆点
+      console.warn(
+        "[MemoryProcessor][存储] ⚠️ 无法生成向量，将存储无向量的记忆点。",
+      );
+      // 这里不抛出错误，而是继续存储（如果你的 Qdrant 配置允许无向量的点）
+      // 如果不允许，或者你认为无向量的点无意义，可以在这里抛出错误：
+      // throw new Error(`无法为消息生成嵌入向量: ${error}`);
     }
+  } else {
+    console.log("[MemoryProcessor][存储] ℹ️ 根据分析结果，跳过生成嵌入向量。");
   }
 
   // --- 5. 生成唯一的 Point ID ---
   const pointId = crypto.randomUUID();
 
   // --- 6. 构建 MemoryPointStruct 对象 ---
+  // 注意：payload 中的 source_context 应使用 RAG 上下文 ID，
+  // 但此函数可能被 Worker 调用，Worker 可能只收到原始 contextId。
+  // 需要确保调用此函数时传入的 contextId 是正确的 RAG ID，
+  // 或者在调用端 (如 main.ts) 准备好 payload 再传递。
+  // 这里暂时假设传入的 message.contextId 就是打算存储的 contextId。
   const memoryPayload: MemoryPayload = {
-    memory_type: memoryType,
+    memory_type: analysisResult.memory_type,
     timestamp: message.timestamp || Date.now(),
     source_user: message.userId,
-    source_context: message.contextId,
-    text_content: processedTextContent,
-    importance_score: importanceScore,
-    // 新增：情感相关字段
-    emotional_valence: emotionalValence,
-    emotional_arousal: emotionalArousal,
-    emotional_dimensions: emotionalDimensions,
-    associative_triggers: associativeTriggers,
+    source_context: message.contextId, // 使用传入的 contextId (应为 RAG ID)
+    text_content: analysisResult.processed_text_content,
+    importance_score: analysisResult.importance_score,
+    emotional_valence: analysisResult.emotional_valence,
+    emotional_arousal: analysisResult.emotional_arousal,
+    emotional_dimensions: analysisResult.emotional_dimensions,
+    associative_triggers: analysisResult.associative_triggers,
     // related_ids 和 insight_metadata 可以在其他地方填充
   };
 
   const memoryPoint: MemoryPointStruct = {
     id: pointId,
-    vector: vector,
+    vector: vector, // vector 可能为空数组 []
     payload: memoryPayload,
   };
 
   // --- 7. 存储到 Qdrant ---
   try {
-    console.log(`[MemoryProcessor] 📦 正在将记忆存储到 Qdrant...`);
+    console.log(`[MemoryProcessor][存储] 📦 正在将记忆存储到 Qdrant...`);
     await upsertMemoryPoints(config.qdrantCollectionName, [memoryPoint]);
     console.log(
-      `[MemoryProcessor] ✅ 记忆成功存储到 Qdrant，Point ID: ${pointId}`,
+      `[MemoryProcessor][存储] ✅ 记忆成功存储到 Qdrant，Point ID: ${pointId}`,
     );
   } catch (error) {
-    console.error("[MemoryProcessor] ❌ 存储记忆到 Qdrant 时出错:", error);
-    // 抛出错误，让上层或Worker捕获并处理
-    throw new Error(`❌ 无法存储记忆: ${error}`);
+    console.error(
+      "[MemoryProcessor][存储] ❌ 存储记忆到 Qdrant 时出错:",
+      error,
+    );
+    // 抛出错误，让上层或 Worker 捕获并处理
+    throw new Error(`无法存储记忆: ${error}`);
   }
 }
 
 /**
  * 辅助函数：获取所有可用的记忆类型
- * 用于在分析指令中列出可用类型
  */
 function getMemoryTypes(): MemoryType[] {
+  // 确保 MemoryType 类型定义包含了 'question'
+  // 如果你的 qdrant_client.ts 中的 MemoryType 没有 'question'，请添加
   return [
     "conversation_turn",
     "fact",
@@ -326,8 +373,9 @@ function getMemoryTypes(): MemoryType[] {
     "summary",
     "persona_trait",
     "joke_or_banter",
-    "reflection", // 思维漫游产生的洞见
-    "emotional_response", // 新增：情感回应类型
+    "reflection",
+    "emotional_response",
+    "question", // 确保这里有 question
     "unknown",
   ];
 }

@@ -1851,7 +1851,7 @@ export async function handleIncomingMessage(
 // --- 主函数：程序入口 ---
 async function main() {
   console.log("==============================================");
-  console.log("  AI 人格核心 - 爱丽丝 v8.0 (进化版)");
+  console.log("  AI 人格核心 - 爱丽丝 v8.1 (LLM驱动评分)");
   console.log("==============================================");
   console.log("▶️ 系统初始化中...");
 
