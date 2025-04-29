@@ -328,6 +328,8 @@ export async function startDiscord(): Promise<void> {
       timestamp: message.createdTimestamp || Date.now(),
     };
 
+    const sourceContextId = analysisInput.contextId; // 复用上面构造的 contextId
+
     // 尝试执行 LLM 分析 (无论是否需要评分，后续流程可能都需要)
     // 将分析放在前面，即使是 DM 或主人消息也分析，简化流程
     try {
@@ -400,7 +402,6 @@ export async function startDiscord(): Promise<void> {
         await message.channel.sendTyping();
 
         // 确定原始来源 ID 和初始 RAG 上下文 ID
-        const sourceContextId = analysisInput.contextId; // 复用上面构造的 contextId
         const currentRAGContextId = channelContextMap.get(sourceContextId) ||
           sourceContextId;
 
@@ -475,6 +476,12 @@ export async function startDiscord(): Promise<void> {
             `[Discord][${sourceContextId}] RAG 返回了空响应，不发送消息。`,
           );
         }
+
+        console.log("[调试] 最终日志前检查:", {
+          sourceContextId,
+          currentRAGContextId,
+          analysisInputExists: !!analysisInput,
+        });
 
         const processEndTime = Date.now();
         console.log(

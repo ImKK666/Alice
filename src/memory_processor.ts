@@ -47,8 +47,10 @@ export interface MessageAnalysisResult {
 export async function analyzeMessageForMemory(
   message: ChatMessageInput,
 ): Promise<MessageAnalysisResult> {
+  // 使用 message.originalSourceContextId 或 message.contextId 进行日志记录和角色判断
+  const logContextId = message.originalSourceContextId || message.contextId;
   console.log(
-    `[MemoryProcessor][分析] 🧠 开始分析消息: 用户 ${message.userId} 在上下文 ${message.contextId}`,
+    `[MemoryProcessor][分析] 🧠 开始分析消息: 用户 ${message.userId} 在上下文 ${logContextId}`,
   );
   console.log(
     `[MemoryProcessor][分析]   消息内容预览: "${
@@ -250,8 +252,9 @@ export async function analyzeMessageForMemory(
 export async function processAndStoreMessage(
   message: ChatMessageInput,
 ): Promise<void> {
+  const logContextId = message.originalSourceContextId || message.contextId;
   console.log(
-    `[MemoryProcessor][存储] 🔍 开始处理消息 LTM 存储: 用户 ${message.userId} 在上下文 ${message.contextId}`,
+    `[MemoryProcessor][存储] 🔍 开始处理消息 LTM 存储: 用户 ${message.userId} 在上下文 ${logContextId}`,
   );
 
   // --- 1. 初步过滤 ---
@@ -263,100 +266,123 @@ export async function processAndStoreMessage(
   let analysisResult: MessageAnalysisResult;
   try {
     // --- 2. 调用分析函数获取结果 ---
-    // 注意：这里的 message.contextId 可能是原始来源 ID，LLM 分析时会用到
     analysisResult = await analyzeMessageForMemory(message);
   } catch (analysisError) {
-    // 如果 LLM 分析失败，决定是否仍要存储原始信息
     console.error(
       "[MemoryProcessor][存储] ❌ LLM 分析失败，无法获取结构化信息:",
       analysisError,
     );
-    // 可以选择在这里返回，或者继续存储一个标记为 'unknown' 的原始消息
     console.warn(
       "[MemoryProcessor][存储] ⚠️ 分析失败，将尝试存储原始消息（类型: unknown）。",
     );
     analysisResult = {
-      memory_type: "unknown", // 标记为未知
-      importance_score: 1, // 标记为不重要
-      processed_text_content: message.text, // 使用原始内容
+      memory_type: "unknown",
+      importance_score: 1,
+      processed_text_content: message.text,
       emotional_valence: 0,
       emotional_arousal: 0,
       emotional_dimensions: { "neutral": 1 },
       associative_triggers: [],
-      requires_embedding: true, // 仍然尝试生成 embedding
+      requires_embedding: true, // 默认需要embedding
     };
-    // 继续执行后续步骤
   }
 
   // --- 3. & 4. 生成 Embedding 向量 (如果需要) ---
-  let vector: number[] = [];
+  let vector: number[] = []; // 初始化为空向量
+  let embeddingSuccess = true; // 标记 Embedding 是否成功
+
   if (analysisResult.requires_embedding) {
     try {
       console.log("[MemoryProcessor][存储] 🤖 正在生成文本的嵌入向量...");
       vector = await embeddings.embedQuery(
-        analysisResult.processed_text_content, // 使用分析后的文本
+        analysisResult.processed_text_content,
       );
-      console.log(
-        `[MemoryProcessor][存储] ✅ 嵌入向量生成完成，维度: ${vector.length}`,
-      );
+      // --- **修复关键点 1：检查向量维度** ---
+      if (vector.length !== config.embeddingDimension) {
+        // 如果维度不匹配，则认为 Embedding 失败
+        console.error(
+          `[MemoryProcessor][存储] ❌ 生成的嵌入向量维度 (${vector.length}) 与配置 (${config.embeddingDimension}) 不符！`,
+        );
+        embeddingSuccess = false;
+        vector = []; // 重置为空向量
+      } else {
+        console.log(
+          `[MemoryProcessor][存储] ✅ 嵌入向量生成完成，维度: ${vector.length}`,
+        );
+      }
+      // --- 修复结束 ---
     } catch (error) {
       console.error("[MemoryProcessor][存储] ❌ 生成嵌入向量时出错:", error);
-      // 向量生成失败，但可能仍然希望存储无向量的记忆点
-      console.warn(
-        "[MemoryProcessor][存储] ⚠️ 无法生成向量，将存储无向量的记忆点。",
-      );
-      // 这里不抛出错误，而是继续存储（如果你的 Qdrant 配置允许无向量的点）
-      // 如果不允许，或者你认为无向量的点无意义，可以在这里抛出错误：
-      // throw new Error(`无法为消息生成嵌入向量: ${error}`);
+      embeddingSuccess = false; // 标记失败
+      vector = []; // 重置为空向量
     }
   } else {
     console.log("[MemoryProcessor][存储] ℹ️ 根据分析结果，跳过生成嵌入向量。");
+    embeddingSuccess = false; // 标记未生成（对于需要向量的集合来说等同于失败）
   }
 
-  // --- 5. 生成唯一的 Point ID ---
-  const pointId = crypto.randomUUID();
+  // --- **修复关键点 2：条件性 Upsert** ---
+  // 只有在需要 Embedding 且 Embedding 成功生成了正确维度的向量时，才执行 Upsert
+  // 或者，如果你的 Qdrant 集合允许无向量的点，并且 analysisResult.requires_embedding 为 false，也可以执行 Upsert，但这取决于你的配置。
+  // 这里采用更严格的检查：只有当向量有效时才插入。
+  if (vector.length === config.embeddingDimension && embeddingSuccess) {
+    // --- 5. 生成唯一的 Point ID ---
+    const pointId = crypto.randomUUID();
 
-  // --- 6. 构建 MemoryPointStruct 对象 ---
-  // 注意：payload 中的 source_context 应使用 RAG 上下文 ID，
-  // 但此函数可能被 Worker 调用，Worker 可能只收到原始 contextId。
-  // 需要确保调用此函数时传入的 contextId 是正确的 RAG ID，
-  // 或者在调用端 (如 main.ts) 准备好 payload 再传递。
-  // 这里暂时假设传入的 message.contextId 就是打算存储的 contextId。
-  const memoryPayload: MemoryPayload = {
-    memory_type: analysisResult.memory_type,
-    timestamp: message.timestamp || Date.now(),
-    source_user: message.userId,
-    source_context: message.contextId, // 使用传入的 contextId (应为 RAG ID)
-    text_content: analysisResult.processed_text_content,
-    importance_score: analysisResult.importance_score,
-    emotional_valence: analysisResult.emotional_valence,
-    emotional_arousal: analysisResult.emotional_arousal,
-    emotional_dimensions: analysisResult.emotional_dimensions,
-    associative_triggers: analysisResult.associative_triggers,
-    // related_ids 和 insight_metadata 可以在其他地方填充
-  };
+    // --- 6. 构建 MemoryPointStruct 对象 ---
+    const memoryPayload: MemoryPayload = {
+      memory_type: analysisResult.memory_type,
+      timestamp: message.timestamp || Date.now(),
+      source_user: message.userId,
+      // **使用 RAG Context ID 作为记忆的 source_context**
+      source_context: message.contextId,
+      text_content: analysisResult.processed_text_content,
+      importance_score: analysisResult.importance_score,
+      emotional_valence: analysisResult.emotional_valence,
+      emotional_arousal: analysisResult.emotional_arousal,
+      emotional_dimensions: analysisResult.emotional_dimensions,
+      associative_triggers: analysisResult.associative_triggers,
+    };
 
-  const memoryPoint: MemoryPointStruct = {
-    id: pointId,
-    vector: vector, // vector 可能为空数组 []
-    payload: memoryPayload,
-  };
+    const memoryPoint: MemoryPointStruct = {
+      id: pointId,
+      vector: vector,
+      payload: memoryPayload,
+    };
 
-  // --- 7. 存储到 Qdrant ---
-  try {
-    console.log(`[MemoryProcessor][存储] 📦 正在将记忆存储到 Qdrant...`);
-    await upsertMemoryPoints(config.qdrantCollectionName, [memoryPoint]);
-    console.log(
-      `[MemoryProcessor][存储] ✅ 记忆成功存储到 Qdrant，Point ID: ${pointId}`,
-    );
-  } catch (error) {
-    console.error(
-      "[MemoryProcessor][存储] ❌ 存储记忆到 Qdrant 时出错:",
-      error,
-    );
-    // 抛出错误，让上层或 Worker 捕获并处理
-    throw new Error(`无法存储记忆: ${error}`);
+    // --- 7. 存储到 Qdrant ---
+    try {
+      console.log(`[MemoryProcessor][存储] 📦 正在将记忆存储到 Qdrant...`);
+      await upsertMemoryPoints(config.qdrantCollectionName, [memoryPoint]);
+      console.log(
+        `[MemoryProcessor][存储] ✅ 记忆成功存储到 Qdrant，Point ID: ${pointId}`,
+      );
+    } catch (error) {
+      console.error(
+        "[MemoryProcessor][存储] ❌ 存储记忆到 Qdrant 时出错:",
+        error,
+      );
+      // 向上抛出错误，让 Worker 知道存储失败
+      throw new Error(`无法存储记忆: ${error}`);
+    }
+  } else {
+    // 如果向量无效或不需要，则跳过存储
+    if (analysisResult.requires_embedding && !embeddingSuccess) {
+      console.warn(
+        `[MemoryProcessor][存储] ⚠️ 由于 Embedding 生成失败或维度错误，跳过 Qdrant 存储 (消息来自 ${logContextId})。`,
+      );
+    } else if (!analysisResult.requires_embedding) {
+      console.log(
+        `[MemoryProcessor][存储] ℹ️ 分析结果表明无需 Embedding，跳过 Qdrant 存储 (消息来自 ${logContextId})。`,
+      );
+    }
+    // 在这种情况下，Worker 应该向主线程报告一个“跳过”或“分析完成但未存储”的状态，而不是“成功”。
+    // 或者，如果跳过存储也算某种程度的“成功处理”，则可以保持 Worker 的成功报告，
+    // 但在这里添加明确的日志很重要。
+    // 为了让主线程知道发生了什么，这里可以选择抛出一个特定错误或返回一个状态。
+    // 暂时只记录日志。
   }
+  // --- 修复结束 ---
 }
 
 /**

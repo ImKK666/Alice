@@ -1,4 +1,4 @@
-// src/main.ts (进化版)
+// src/main.ts (融合 social_cognition, self_concept, memory_network 的增强版)
 
 // --- 核心依赖导入 ---
 import { parse } from "https://deno.land/std@0.224.0/flags/mod.ts";
@@ -6,16 +6,16 @@ import { config } from "./config.ts";
 import { type ChatMessageInput } from "./memory_processor.ts";
 import { embeddings } from "./embeddings.ts";
 import {
-  type EmotionDimension, // 确保导入
+  type EmotionDimension,
   ensureCollectionExists,
   type MemoryPayload,
-  type MemoryPointStruct, // 确保导入
-  type MemoryType, // 确保导入
-  qdrantClient, // Qdrant 客户端实例
+  type MemoryPointStruct,
+  type MemoryType,
+  qdrantClient,
   type Schemas,
   searchMemories,
-  searchMemoriesByEmotion, // 新增：按情感搜索
-  upsertMemoryPoints, // 确保导入
+  searchMemoriesByEmotion,
+  upsertMemoryPoints,
 } from "./qdrant_client.ts";
 import { llm } from "./llm.ts";
 import {
@@ -28,48 +28,65 @@ import {
 import { startCli } from "./cli_interface.ts";
 import { startDiscord } from "./discord_interface.ts";
 
-// --- 进化模块导入 ---
-import { // 思维漫游模块
+// --- 进化模块导入 (保留，部分功能可能仍被直接调用) ---
+import {
   type Insight,
-  type InsightCollection, // 确保导入
-  type InsightType, // 确保导入
+  type InsightCollection,
+  type InsightType,
   retrieveRelevantInsights,
   schedulePeriodicMindWandering,
   triggerMindWandering,
   type WanderingContext,
-} from "./mind_wandering.ts"; // 注意：mind_wandering 会导入 main 的函数
-import { // 时间感知模块
+} from "./mind_wandering.ts";
+import {
   addTimeMarker,
   analyzeConversationPace,
   calculateSubjectiveTimeElapsed,
   enhanceMemoriesWithTemporalContext,
   findRelevantTimeMarkers,
-  generateTimeExpression, // 确保导入
-  recordInteractionTimestamp, // 用于记录交互时间戳
-  type TemporalContext, // 如果需要在main中直接操作时间上下文
+  generateTimeExpression,
+  recordInteractionTimestamp,
+  type TemporalContext,
   type TimeMarker,
 } from "./time_perception.ts";
-import { // 人类语言模式模块
-  advancedHumanizeText,
-  humanizeText,
-} from "./human_patterns.ts";
-import { // 虚拟具身模块
-  generateBodyStateExpression, // 导入基础表达
-  generateEmbodiedExpressions, // 替代旧的 generateBodyStateExpression
-  getBodyState, // 导入 getBodyState 以便在 mind_wandering 中使用
-  processMessageAndUpdateState, // 替代旧的 processMessage
-  processStateChangeEvent, // 如果需要在main中直接触发
+import { advancedHumanizeText, humanizeText } from "./human_patterns.ts";
+import {
+  generateBodyStateExpression,
+  generateEmbodiedExpressions,
+  getBodyState,
+  processMessageAndUpdateState,
+  processStateChangeEvent,
   StateChangeEvent,
   type VirtualPhysicalState,
 } from "./virtual_embodiment.ts";
-import { // 社交动态模块
-  analyzeInteractionImpact,
-  getRelationshipState,
-  getRelationshipSummary,
-  type InteractionStylePreset, // 如果需要使用预设类型
-  type RelationshipState,
-} from "./social_dynamics.ts";
 import { loadStopwordsFromFile } from "./utils.ts";
+
+// --- 新增/修改的导入 ---
+// import { // 旧的社交动态导入 (将被替换)
+//   analyzeInteractionImpact,
+//   getRelationshipState,
+//   getRelationshipSummary,
+//   type InteractionStylePreset,
+//   type RelationshipState,
+// } from "./social_dynamics.ts"; // 旧的社交模块
+import { // 导入新的社交认知模块
+  type EnhancedRelationshipState, // 使用增强的关系状态接口
+  getSocialCognitionManager, // 获取社交认知管理器实例
+  InteractionStylePreset, // 互动风格枚举
+  RelationshipDimension, // 关系维度枚举
+} from "./social_cognition.ts";
+import { // 导入自我概念模块
+  selfConcept, // 导入整个模块接口
+  type SelfModel, // 自我模型接口
+  ValueDomain, // 价值领域枚举
+} from "./self_concept.ts";
+import { // 导入记忆网络模块
+  type MemoryActivationResult, // 记忆激活结果接口
+  memoryNetwork, // 导入整个模块接口
+  type MemoryRelation, // 记忆关联接口
+} from "./memory_network.ts";
+// import { cognitiveIntegration } from "./cognitive_integration.ts"; // 暂不引入协调中心
+// import { thoughtStreams } from "./thought_streams.ts"; // 暂不替换响应逻辑
 
 // --- 类型定义 ---
 // 记忆上下文条目，增强了时间信息
@@ -78,7 +95,8 @@ interface LtmContextItem {
   payload: MemoryPayload;
   score?: number; // 原始相关性得分
   rerank_score?: number; // Rerank 得分
-  source: "retrieved" | "recent" | "emotional"; // 来源标记
+  activation_score?: number; // 记忆网络激活得分 (新增)
+  source: "retrieved" | "recent" | "emotional" | "activated"; // 来源标记 (新增 'activated')
   temporal_context?: string; // 时间表达 (来自 time_perception)
   decay_factor?: number; // 记忆衰减因子 (来自 time_perception)
 }
@@ -93,25 +111,31 @@ export let kv: Deno.Kv | null = null; // Deno KV 实例 (用于STM和状态存�
 let ltmWorker: Worker | null = null; // 后台LTM存储Worker
 
 // --- 状态管理 ---
-// Map<userId, contextId[]> 跟踪活跃的用户-上下文对，用于定期思维漫游
 const activeUserContexts = new Map<string, string[]>();
-// Map<"userId:contextId", timestamp> 记录上次思维漫游时间 (现在通过 KV 管理)
 
 // --- 用于存储已加载停用词的全局变量 ---
-let loadedStopwordsSet: Set<string> = new Set(); // 初始化为空集合
+let loadedStopwordsSet: Set<string> = new Set();
+
+// --- 模块实例 ---
+const socialCognition = getSocialCognitionManager(); // 获取社交认知管理器实例
+const selfConceptManager = new selfConcept.SelfConceptManager(); // 创建自我概念管理器实例
 
 // --- 初始化 STM (Deno KV) ---
 async function initializeKv() {
   try {
-    // 根据 Deno 版本和环境选择合适的 KV 打开方式
-    // 假设使用默认路径
-    kv = await Deno.openKv(); // 如果需要指定路径: await Deno.openKv("/path/to/kv.db");
-    console.log("✅ STM & State Storage (Deno KV) 初始化成功。");
+    // --- 修改这里：指定路径 ---
+    const kvPath = "./data/alice.sqlite"; // 指定存储在 data 目录下
+    console.log(
+      `[初始化][日志] 尝试在路径 "${kvPath}" 打开或创建 Deno KV 数据库...`,
+    );
+    kv = await Deno.openKv(kvPath); // <--- 在这里传入路径
+    // --- 修改结束 ---
+    console.log(
+      `✅ STM & State Storage (Deno KV) 初始化成功。数据存储于: ${kvPath}`,
+    );
   } catch (error) {
     console.error("❌ STM & State Storage (Deno KV) 初始化失败:", error);
     console.warn("⚠️ STM 和状态存储功能将被禁用。");
-    // 可以考虑在这里退出程序，因为很多功能依赖KV
-    // Deno.exit(1);
   }
 }
 
@@ -124,24 +148,24 @@ function initializeLtmWorker() {
     console.log("✅ LTM Worker 初始化成功。");
     ltmWorker.onerror = (e) => {
       console.error(`❌ LTM Worker 遇到错误: ${e.message}`);
-      e.preventDefault(); // 防止默认错误处理（可能导致进程退出）
+      e.preventDefault();
     };
     ltmWorker.onmessage = (e) => {
       // 处理来自 Worker 的成功或失败消息
       if (e.data?.status === "success") {
         console.log(
-          `[LTM Worker] ✅ 消息 LTM 存储成功 (用户: ${e.data.userId}, RAG 上下文: ${e.data.contextId}, 原始来源: ${e.data.originalSourceContextId}, 耗时: ${e.data.duration}s)`,
+          `[LTM Worker][日志] ✅ 消息 LTM 存储成功 (用户: ${e.data.userId}, RAG 上下文: ${e.data.contextId}, 原始来源: ${e.data.originalSourceContextId}, 耗时: ${e.data.duration}s)`,
         );
       } else if (e.data?.status === "error") {
         console.error(
-          `[LTM Worker] ❌ 消息 LTM 存储失败 (用户: ${e.data.userId}, RAG 上下文: ${e.data.contextId}, 原始来源: ${e.data.originalSourceContextId}): ${e.data.error}`,
+          `[LTM Worker][日志] ❌ 消息 LTM 存储失败 (用户: ${e.data.userId}, RAG 上下文: ${e.data.contextId}, 原始来源: ${e.data.originalSourceContextId}): ${e.data.error}`,
         );
       } else {
-        console.log(`[ LTM Worker 消息 ] ${JSON.stringify(e.data)}`);
+        console.log(`[LTM Worker][日志] 收到消息: ${JSON.stringify(e.data)}`);
       }
     };
     ltmWorker.onmessageerror = (e) => {
-      console.error("[ LTM Worker ] 接收消息出错:", e);
+      console.error("[LTM Worker][日志] 接收消息出错:", e);
     };
   } catch (error) {
     console.error("❌ LTM Worker 初始化失败:", error);
@@ -149,19 +173,24 @@ function initializeLtmWorker() {
   }
 }
 
-// --- STM 相关函数 ---
+// --- STM 相关函数 (保持不变) ---
 /** 获取指定上下文的STM历史 */
 export async function getStm(contextId: string): Promise<ChatMessageInput[]> {
   if (!kv) {
-    console.warn("[STM] KV 未初始化，无法获取 STM。");
+    console.warn("[STM][日志] KV 未初始化，无法获取 STM。");
     return [];
   }
   try {
     const key = ["stm", contextId];
     const result = await kv.get<ChatMessageInput[]>(key);
+    console.log(
+      `[STM][调试] 从 KV 读取 STM (上下文 ${contextId})，找到 ${
+        result.value?.length ?? 0
+      } 条记录。`,
+    );
     return result.value ?? [];
   } catch (error) {
-    console.error(`❌ 读取 STM 出错 (上下文 ${contextId}):`, error);
+    console.error(`❌ [STM][错误] 读取 STM 出错 (上下文 ${contextId}):`, error);
     return [];
   }
 }
@@ -172,11 +201,16 @@ async function updateStm(
   newMessage: ChatMessageInput,
 ): Promise<ChatMessageInput[]> {
   if (!kv) {
-    console.warn("[STM] KV 未初始化，无法更新 STM。");
+    console.warn("[STM][日志] KV 未初始化，无法更新 STM。");
     return [newMessage];
   }
   const key = ["stm", contextId];
   let finalStm: ChatMessageInput[] = [newMessage]; // 默认至少包含新消息
+  console.log(
+    `[STM][调试] 准备更新 STM (上下文 ${contextId})，新消息: ${
+      newMessage.text.substring(0, 30)
+    }...`,
+  );
 
   try {
     let success = false;
@@ -185,11 +219,19 @@ async function updateStm(
       const getResult = await kv.get<ChatMessageInput[]>(key);
       const currentStm = getResult.value ?? [];
       const currentVersionstamp = getResult.versionstamp; // 用于原子性检查
+      console.log(
+        `[STM][调试] 原子更新尝试 ${
+          i + 1
+        }: 当前版本戳 ${currentVersionstamp}, 当前记录数 ${currentStm.length}`,
+      );
 
       // 创建包含新消息但不超过限制的历史记录
       const combinedStm = [...currentStm, newMessage];
       const prunedStm = combinedStm.slice(-STM_MAX_MESSAGES); // 保留最新的 N 条
       finalStm = prunedStm; // 更新函数范围内的 finalStm，以便出错时返回
+      console.log(
+        `[STM][调试] 原子更新尝试 ${i + 1}: 更新后记录数 ${prunedStm.length}`,
+      );
 
       const atomicOp = kv.atomic()
         .check({ key: key, versionstamp: currentVersionstamp }) // 检查版本
@@ -199,13 +241,13 @@ async function updateStm(
 
       if (commitResult.ok) {
         success = true;
+        console.log(`[STM][日志] ✅ STM 原子更新成功 (上下文 ${contextId})。`);
       } else {
         console.warn(
-          `⚠️ STM 更新冲突 (上下文 ${contextId})，尝试次数 ${
+          `[STM][日志] ⚠️ STM 更新冲突 (上下文 ${contextId})，尝试次数 ${
             i + 1
           }。正在重试...`,
         );
-        // 等待一个随机的小时间，避免同时重试
         await new Promise((resolve) =>
           setTimeout(resolve, Math.random() * 50 + 20)
         );
@@ -213,38 +255,42 @@ async function updateStm(
     }
     if (!success) {
       console.error(
-        `❌ STM 更新失败 (上下文 ${contextId})，已达最大尝试次数。返回内存中的状态。`,
+        `❌ [STM][错误] STM 更新失败 (上下文 ${contextId})，已达最大尝试次数。返回内存中的状态。`,
       );
     }
     return finalStm;
   } catch (error) {
-    console.error(`❌ STM 原子更新出错 (上下文 ${contextId}):`, error);
+    console.error(
+      `❌ [STM][错误] STM 原子更新出错 (上下文 ${contextId}):`,
+      error,
+    );
     return finalStm; // 出错时返回当前内存中的状态
   }
 }
 
 // --- 辅助函数 ---
 
-/** 更新活跃用户上下文映射 */
+/** 更新活跃用户上下文映射 (保持不变) */
 function updateActiveUserContexts(userId: string, contextId: string): void {
   const userContexts = activeUserContexts.get(userId) || [];
   if (!userContexts.includes(contextId)) {
     userContexts.push(contextId);
-    if (userContexts.length > 10) { // 限制每个用户跟踪的上下文数量
+    if (userContexts.length > 10) {
       userContexts.shift();
     }
-  } // 可以选择性地将最新交互的上下文移到末尾，表示更活跃
-  else {
+  } else {
     userContexts.splice(userContexts.indexOf(contextId), 1);
     userContexts.push(contextId);
   }
   activeUserContexts.set(userId, userContexts);
+  console.log(
+    `[辅助][调试] 更新活跃用户上下文: User ${userId} -> Contexts [${
+      userContexts.join(", ")
+    }]`,
+  );
 }
 
-/**
- * 获取上次思维漫游时间 (从 KV)
- * !!! 新增：添加 export !!!
- */
+/** 获取上次思维漫游时间 (保持不变) */
 export async function getLastWanderingTime(
   userId: string,
   contextId: string, // 这里应该是 RAG Context ID
@@ -253,20 +299,18 @@ export async function getLastWanderingTime(
   const key = ["last_wandering_time", userId, contextId];
   try {
     const result = await kv.get<number>(key);
+    // console.log(`[辅助][调试] 获取上次漫游时间 (用户 ${userId}, 上下文 ${contextId}): ${result.value || 0}`);
     return result.value || 0;
   } catch (error) {
     console.error(
-      `获取用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
+      `❌ [辅助][错误] 获取用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
       error,
     );
     return 0;
   }
 }
 
-/**
- * 设置上次思维漫游时间 (到 KV)
- * !!! 新增：添加 export !!!
- */
+/** 设置上次思维漫游时间 (保持不变) */
 export async function setLastWanderingTime(
   userId: string,
   contextId: string, // 这里应该是 RAG Context ID
@@ -276,15 +320,20 @@ export async function setLastWanderingTime(
   const key = ["last_wandering_time", userId, contextId];
   try {
     await kv.set(key, timestamp);
+    console.log(
+      `[辅助][日志] 设置用户 ${userId} 在上下文 ${contextId} 的上次漫游时间为 ${
+        new Date(timestamp).toLocaleTimeString()
+      }`,
+    );
   } catch (error) {
     console.error(
-      `设置用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
+      `❌ [辅助][错误] 设置用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
       error,
     );
   }
 }
 
-/** 提取最近话题 (使用加载的停用词库) */
+/** 提取最近话题 (保持不变) */
 export function extractRecentTopics(history: ChatMessageInput[]): string[] {
   if (history.length === 0) return [];
   const recentMessages = history.slice(-5); // 取最近5条
@@ -295,15 +344,15 @@ export function extractRecentTopics(history: ChatMessageInput[]): string[] {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}\s]/gu, "") // 移除非字母、数字、空格
       .split(/\s+/)
-      // 使用加载的停用词集合进行过滤
       .filter((word) => word.length > 1 && !loadedStopwordsSet.has(word)); // <-- 使用加载的集合
     words.forEach((word) => topics.add(word));
   }
-  // 返回最多10个话题
-  return Array.from(topics).slice(0, 10);
+  const extractedTopics = Array.from(topics).slice(0, 10);
+  // console.log(`[辅助][调试] 提取到最近话题: [${extractedTopics.join(', ')}]`);
+  return extractedTopics;
 }
 
-/** 分析消息情感状态 (使用LLM) */
+/** 分析消息情感状态 (保持不变) */
 async function analyzeMessageSentiment(text: string): Promise<{
   valence: number;
   arousal: number;
@@ -329,16 +378,14 @@ async function analyzeMessageSentiment(text: string): Promise<{
     const responseContent = typeof response === "string"
       ? response
       : (response.content as string);
-    // 增加对空响应的健壮性处理
     if (!responseContent) {
-      console.warn("情感分析 LLM 返回空内容，使用默认值。");
+      console.warn("[辅助][日志] 情感分析 LLM 返回空内容，使用默认值。");
       throw new Error("LLM returned empty content");
     }
     const cleanedContent = responseContent.trim().replace(/```json|```/g, "");
     const sentimentData = JSON.parse(cleanedContent);
 
     const emotions = sentimentData.emotions || { "neutral": 1.0 };
-    // 确保 valence 和 arousal 是数字
     const valence = typeof sentimentData.valence === "number"
       ? sentimentData.valence
       : 0;
@@ -347,14 +394,16 @@ async function analyzeMessageSentiment(text: string): Promise<{
       : 0;
     const dominantEmotion = getDominantEmotion(emotions);
 
-    return {
+    const result = {
       valence: Math.max(-1, Math.min(1, valence)), // 限制范围
       arousal: Math.max(0, Math.min(1, arousal)), // 限制范围
       emotionDimensions: emotions,
       dominant_emotion: dominantEmotion,
     };
+    // console.log(`[辅助][调试] 情感分析结果:`, result);
+    return result;
   } catch (error) {
-    console.error("情感分析失败:", error);
+    console.error("❌ [辅助][错误] 情感分析失败:", error);
     return { // 返回默认中性情感
       valence: 0,
       arousal: 0,
@@ -364,7 +413,7 @@ async function analyzeMessageSentiment(text: string): Promise<{
   }
 }
 
-/** 获取情感维度中得分最高的情感 */
+/** 获取情感维度中得分最高的情感 (保持不变) */
 function getDominantEmotion(
   emotionDimensions: { [key in string]?: number },
 ): string {
@@ -372,39 +421,27 @@ function getDominantEmotion(
   let dominantEmotion = "neutral"; // 默认中性
 
   for (const [emotion, score] of Object.entries(emotionDimensions)) {
-    // 确保 score 是有效数字
     if (typeof score === "number" && score > maxScore) {
-      // 忽略中性情感作为主导情绪，除非它是唯一得分高的
       if (
         emotion !== "neutral" || Object.keys(emotionDimensions).length === 1
       ) {
         maxScore = score;
         dominantEmotion = emotion;
       } else if (dominantEmotion === "neutral" && emotion === "neutral") {
-        // 如果当前主导是中性，且遇到中性，也更新分数
         maxScore = score;
       }
     }
   }
-  // 如果最高分还是很低，则认为是中性
   if (maxScore < 0.3 && dominantEmotion !== "neutral") {
     return "neutral";
   }
-
   return dominantEmotion;
 }
 
 // --- 核心 RAG 逻辑 ---
 
 /**
- * 步骤 0: 自动判断当前 RAG 上下文 (简化版逻辑)
- * !!! 修改：实现简化逻辑 !!!
- * @param userId 用户 ID
- * @param previousRagContextId 上一次的 RAG 上下文 ID (用于日志和可能的平滑过渡)
- * @param stmHistory 短期记忆历史
- * @param newMessage 新消息
- * @param sourceContextId 原始来源上下文 ID (例如 discord_channel_xyz)
- * @returns 新的 RAG 上下文 ID
+ * 步骤 0: 自动判断当前 RAG 上下文 (保持不变)
  */
 async function determineCurrentContext(
   userId: string,
@@ -414,13 +451,12 @@ async function determineCurrentContext(
   sourceContextId: string, // <-- 传入原始来源 ID
 ): Promise<string> {
   console.log(
-    `▶️ [ContextDetect] 开始判断场景 (先前 RAG 上下文: ${previousRagContextId}, 原始来源: ${sourceContextId})...`,
+    `▶️ [ContextDetect][日志] 开始判断场景 (先前 RAG 上下文: ${previousRagContextId}, 原始来源: ${sourceContextId})...`,
   );
 
-  // --- 1. 解析原始来源 ID ---
-  let sourceType = "unknown"; // 'dchan', 'ddm', 'cli', 'other'
-  let baseIdentifier = sourceContextId; // 基础标识符 (频道ID, 用户ID等)
-  let sourcePrefix = ""; // 用于重构基础ID
+  let sourceType = "unknown";
+  let baseIdentifier = sourceContextId;
+  let sourcePrefix = "";
 
   if (sourceContextId.startsWith("discord_channel_")) {
     sourceType = "dchan";
@@ -435,7 +471,6 @@ async function determineCurrentContext(
     sourcePrefix = "cli_";
     baseIdentifier = sourceContextId.substring(sourcePrefix.length);
   } else {
-    // 尝试从之前的 RAG ID 中恢复（作为后备）
     const parts = previousRagContextId.split("_");
     if (parts.length >= 3) {
       const potentialType = parts[parts.length - 2];
@@ -450,39 +485,38 @@ async function determineCurrentContext(
           0,
           previousRagContextId.length - potentialType.length -
             potentialId.length - 2,
-        ) + "_"; // e.g. "casual_chat_"
+        ) + "_";
         console.log(
-          `   [ContextDetect] 从先前 RAG ID (${previousRagContextId}) 恢复来源: 类型=${sourceType}, 标识符=${baseIdentifier}`,
+          `   [ContextDetect][调试] 从先前 RAG ID (${previousRagContextId}) 恢复来源: 类型=${sourceType}, 标识符=${baseIdentifier}`,
         );
       } else {
         console.log(
-          `   [ContextDetect] 未能从原始来源 (${sourceContextId}) 或先前 RAG ID 解析出明确类型，将使用 'unknown' 类型。`,
+          `   [ContextDetect][调试] 未能从原始来源 (${sourceContextId}) 或先前 RAG ID 解析出明确类型，将使用 'unknown' 类型。`,
         );
-        baseIdentifier = userId; // Fallback to userId if channel/dm id is lost
+        baseIdentifier = userId;
         sourceType = "unknown";
         sourcePrefix = "unknown_";
       }
     } else {
       console.log(
-        `   [ContextDetect] 未能从原始来源 (${sourceContextId}) 或先前 RAG ID 解析出明确类型，将使用 'unknown' 类型。`,
+        `   [ContextDetect][调试] 未能从原始来源 (${sourceContextId}) 或先前 RAG ID 解析出明确类型，将使用 'unknown' 类型。`,
       );
-      baseIdentifier = userId; // Fallback to userId
+      baseIdentifier = userId;
       sourceType = "unknown";
       sourcePrefix = "unknown_";
     }
   }
   console.log(
-    `   [ContextDetect] 解析到来源基础: 类型=${sourceType}, 标识符=${baseIdentifier}`,
+    `   [ContextDetect][调试] 解析到来源基础: 类型=${sourceType}, 标识符=${baseIdentifier}`,
   );
 
-  // --- 2. 使用 LLM 进行当前消息的场景分类 ---
   const historySnippet = stmHistory
-    .slice(-5) // 只取最近几条，避免过长
+    .slice(-5)
     .map((msg) =>
       `${msg.userId === userId ? "You" : msg.userId.substring(0, 4)}: ${
         msg.text.substring(0, 50)
       }...`
-    ) // 简化历史
+    )
     .join("\n");
 
   const classificationPrompt = `
@@ -515,12 +549,14 @@ Category:`;
       (typeof response === "string" ? response : (response.content as string))
         ?.trim();
     console.log(
-      `   [ContextDetect] LLM 分类结果: "${classificationResult || "(空)"}"`,
+      `   [ContextDetect][调试] LLM 分类结果: "${
+        classificationResult || "(空)"
+      }"`,
     );
 
     if (classificationResult) {
       const lowerResult = classificationResult.toLowerCase();
-      let prefix = "other"; // 默认分类简称
+      let prefix = "other";
 
       if (lowerResult.startsWith("casual chat")) {
         prefix = "casual";
@@ -528,13 +564,15 @@ Category:`;
         const parts = classificationResult.split(":");
         const identifier = parts.length > 1
           ? parts[1].trim().replace(/[\s/\\?%*:|"<>#]/g, "_")
-          : null; // 清理更多特殊字符
-        if (identifier && identifier.length > 0 && identifier.length < 30) { // 增加长度和内容检查
-          newContextId = `work_project_${identifier}`; // 特定项目ID，不含来源
-          console.log(`   [ContextDetect] 识别到特定工作项目: ${identifier}`);
+          : null;
+        if (identifier && identifier.length > 0 && identifier.length < 30) {
+          newContextId = `work_project_${identifier}`;
+          console.log(
+            `   [ContextDetect][日志] 识别到特定工作项目: ${identifier}`,
+          );
           prefix = ""; // 标记为特殊格式
         } else {
-          prefix = "work"; // 通用工作
+          prefix = "work";
         }
       } else if (lowerResult.startsWith("info query")) {
         prefix = "info";
@@ -547,14 +585,12 @@ Category:`;
         const emotion = parts.length > 1
           ? parts[1].trim().toLowerCase().replace(/[\s/\\?%*:|"<>#]/g, "_")
           : "general";
-        prefix = `emo_${emotion.substring(0, 10)}`; // 限制情感词长度
+        prefix = `emo_${emotion.substring(0, 10)}`;
       } else if (lowerResult.startsWith("other")) {
         prefix = "other";
       }
 
-      // 只有在不是特定项目ID格式时，才组合前缀和来源
       if (prefix) {
-        // 限制 baseIdentifier 长度，避免过长
         const shortBaseId = baseIdentifier.length > 18
           ? baseIdentifier.substring(baseIdentifier.length - 18)
           : baseIdentifier;
@@ -562,31 +598,32 @@ Category:`;
       }
     } else {
       console.warn(
-        "   [ContextDetect] LLM 未返回有效分类，将使用基于原始来源的默认上下文。",
+        "   [ContextDetect][日志] LLM 未返回有效分类，将使用基于原始来源的默认上下文。",
       );
       const shortBaseId = baseIdentifier.length > 18
         ? baseIdentifier.substring(baseIdentifier.length - 18)
         : baseIdentifier;
-      newContextId = `unknown_${sourceType}_${shortBaseId}`; // 标记为未知分类
+      newContextId = `unknown_${sourceType}_${shortBaseId}`;
     }
   } catch (error) {
-    console.error("❌ [ContextDetect] 调用 LLM 进行上下文分类时出错:", error);
+    console.error(
+      "❌ [ContextDetect][错误] 调用 LLM 进行上下文分类时出错:",
+      error,
+    );
     console.log(
-      "   [ContextDetect] ⚠️ 上下文分类失败，将使用基于原始来源的默认上下文。",
+      "   [ContextDetect][日志] ⚠️ 上下文分类失败，将使用基于原始来源的默认上下文。",
     );
     const shortBaseId = baseIdentifier.length > 18
       ? baseIdentifier.substring(baseIdentifier.length - 18)
       : baseIdentifier;
-    newContextId = `error_${sourceType}_${shortBaseId}`; // 标记为错误状态
+    newContextId = `error_${sourceType}_${shortBaseId}`;
   }
 
-  // --- 3. 对比并输出结果 ---
   if (newContextId !== previousRagContextId) {
     console.log(
-      `   [ContextDetect] 💡 RAG 上下文切换/确定: "${newContextId}" (来自先前: "${previousRagContextId}")`,
+      `   [ContextDetect][日志] 💡 RAG 上下文切换/确定: "${newContextId}" (来自先前: "${previousRagContextId}")`,
     );
   } else {
-    // 如果 ID 没变，也要确保它不是过于复杂的旧格式，如果是，强制简化
     if (
       previousRagContextId.split("_").length > 3 &&
       !previousRagContextId.startsWith("work_project_")
@@ -594,64 +631,65 @@ Category:`;
       const shortBaseId = baseIdentifier.length > 18
         ? baseIdentifier.substring(baseIdentifier.length - 18)
         : baseIdentifier;
-      newContextId = `default_${sourceType}_${shortBaseId}`; // 强制简化
+      newContextId = `default_${sourceType}_${shortBaseId}`;
       console.log(
-        `   [ContextDetect] ⚠️ 先前 RAG ID (${previousRagContextId}) 结构复杂，已强制简化为: "${newContextId}"`,
+        `   [ContextDetect][日志] ⚠️ 先前 RAG ID (${previousRagContextId}) 结构复杂，已强制简化为: "${newContextId}"`,
       );
     } else {
       console.log(
-        `   [ContextDetect] RAG 上下文保持为: "${previousRagContextId}"`,
+        `   [ContextDetect][调试] RAG 上下文保持为: "${previousRagContextId}"`,
       );
     }
   }
   return newContextId;
 }
 
-/** 步骤 1: 决定 LTM 策略 */
+/** 步骤 1: 决定 LTM 策略 (保持不变) */
 async function decideLtmStrategy(
   ragContextId: string, // 使用已确定的 RAG 上下文 ID
 ): Promise<LtmStrategy> {
   console.log(
-    `▶️ [LTM Strategy] 决定 LTM 策略 (RAG 上下文: ${ragContextId})...`,
+    `▶️ [LTM Strategy][日志] 决定 LTM 策略 (RAG 上下文: ${ragContextId})...`,
   );
 
-  // 工作相关上下文，使用精确检索+重排序
   if (ragContextId.startsWith("work_")) {
-    console.log("   [LTM Strategy] -> 工作上下文，使用精确检索 (LTM_NOW)");
+    console.log(
+      "   [LTM Strategy][调试] -> 工作上下文，使用精确检索 (LTM_NOW)",
+    );
     return "LTM_NOW";
-  } // 信息查询类上下文，也使用精确检索+重排序
-  else if (ragContextId.startsWith("info_")) {
-    console.log("   [LTM Strategy] -> 信息查询上下文，使用精确检索 (LTM_NOW)");
+  } else if (ragContextId.startsWith("info_")) {
+    console.log(
+      "   [LTM Strategy][调试] -> 信息查询上下文，使用精确检索 (LTM_NOW)",
+    );
     return "LTM_NOW";
-  } // 哲学讨论或需要深度思考的上下文，也用精确检索
-  else if (ragContextId.startsWith("philo_")) {
-    console.log("   [LTM Strategy] -> 哲学讨论上下文，使用精确检索 (LTM_NOW)");
+  } else if (ragContextId.startsWith("philo_")) {
+    console.log(
+      "   [LTM Strategy][调试] -> 哲学讨论上下文，使用精确检索 (LTM_NOW)",
+    );
     return "LTM_NOW";
-  } // 闲聊、日程、情感支持、其他等场景，优先使用近期记忆
-  else if (
+  } else if (
     ragContextId.startsWith("casual_") ||
     ragContextId.startsWith("sched_") ||
     ragContextId.startsWith("emo_") ||
     ragContextId.startsWith("other_") ||
-    ragContextId.startsWith("unknown_") || // 未知分类也用近期
-    ragContextId.startsWith("error_") || // 错误状态用近期
-    ragContextId.startsWith("default_") // 简化后的默认也用近期
+    ragContextId.startsWith("unknown_") ||
+    ragContextId.startsWith("error_") ||
+    ragContextId.startsWith("default_")
   ) {
     const contextType = ragContextId.split("_")[0];
     console.log(
-      `   [LTM Strategy] -> ${contextType} 上下文，使用近期记忆 (LTM_RECENT)`,
+      `   [LTM Strategy][调试] -> ${contextType} 上下文，使用近期记忆 (LTM_RECENT)`,
     );
     return "LTM_RECENT";
-  } // 无法识别或默认情况，保守起见使用近期记忆
-  else {
+  } else {
     console.log(
-      `   [LTM Strategy] -> 未知或默认上下文 (${ragContextId})，使用近期记忆 (LTM_RECENT)`,
+      `   [LTM Strategy][日志] -> 未知或默认上下文 (${ragContextId})，使用近期记忆 (LTM_RECENT)`,
     );
     return "LTM_RECENT";
   }
 }
 
-/** 步骤 3: 根据策略检索 LTM (增强版) */
+/** 步骤 3: 根据策略检索 LTM (增强版 - 集成记忆网络) */
 async function retrieveLtmBasedOnStrategy(
   strategy: LtmStrategy,
   message: ChatMessageInput, // 包含 RAG Context ID
@@ -664,35 +702,35 @@ async function retrieveLtmBasedOnStrategy(
   const contextId = message.contextId; // 使用 RAG Context ID
   const retrievedItems: LtmContextItem[] = []; // 存储同步检索结果
   console.log(
-    `▶️ [LTM Retrieve] 根据策略 "${strategy}" 检索 LTM (RAG 上下文: ${contextId})...`,
+    `▶️ [LTM Retrieve][日志] 根据策略 "${strategy}" 检索 LTM (RAG 上下文: ${contextId})...`,
   );
+
+  let initialMemories: Array<
+    Schemas["ScoredPoint"] & { payload: MemoryPayload }
+  > = [];
+  let seedMemoryIds: string[] = []; // 用于记忆网络激活
 
   // --- 分支：根据策略执行不同的检索方法 ---
   if (strategy === "LTM_NOW") {
-    // LTM_NOW: 精确向量搜索 + Rerank + 情感增强
     try {
       console.log(
-        `   [LTM Retrieve] -> 🔍 精确向量搜索 (RAG 上下文: ${contextId})...`,
+        `   [LTM Retrieve][调试] -> 🔍 精确向量搜索 (RAG 上下文: ${contextId})...`,
       );
       const searchVector = await embeddings.embedQuery(message.text);
-
-      // 构建基础过滤器：匹配当前 RAG 上下文
       const baseFilter: Schemas["Filter"] = {
         must: [{ key: "source_context", match: { value: contextId } }],
       };
-
-      // 执行向量搜索
-      const initialMemories = await searchMemories(
+      initialMemories = await searchMemories(
         config.qdrantCollectionName,
         searchVector,
         config.ragInitialRetrievalLimit,
         baseFilter,
       );
       console.log(
-        `   [调试 LTM Retrieve] 初始向量搜索找到 ${initialMemories.length} 条结果 (上下文: ${contextId})。`,
+        `   [LTM Retrieve][调试] 初始向量搜索找到 ${initialMemories.length} 条结果 (上下文: ${contextId})。`,
       );
+      seedMemoryIds = initialMemories.slice(0, 2).map((m) => m.id.toString()); // 取最相关的1-2个作为种子
 
-      // 转换结果格式以供 Reranker 使用
       const candidateMemories: CandidateMemory[] = initialMemories.map(
         (mem) => ({
           id: mem.id.toString(),
@@ -701,21 +739,20 @@ async function retrieveLtmBasedOnStrategy(
         }),
       );
 
-      // 如果有向量记忆，执行重排序
       if (candidateMemories.length > 0) {
-        console.log("   [LTM Retrieve] -> 🔄 执行 LTM 重排序...");
+        console.log("   [LTM Retrieve][调试] -> 🔄 执行 LTM 重排序...");
         const rerankedMemories: RerankedMemory[] = await rerankMemories(
           message.text,
           candidateMemories,
         );
         console.log(
-          `   [调试 LTM Retrieve] 重排序后得到 ${rerankedMemories.length} 条结果。`,
+          `   [LTM Retrieve][调试] 重排序后得到 ${rerankedMemories.length} 条结果。`,
         );
 
-        // 如果重排序成功，使用重排序结果
         if (rerankedMemories.length > 0) {
-          console.log("   [LTM Retrieve] -> ✅ 重排序成功，使用重排序的结果。");
-          // 应用情感增强排序
+          console.log(
+            "   [LTM Retrieve][调试] -> ✅ 重排序成功，使用重排序的结果。",
+          );
           const emotionallyEnhancedMemories = enhanceMemoriesWithEmotion(
             rerankedMemories.map((m) => ({ ...m, score: m.rerank_score })),
             messageSentiment,
@@ -732,9 +769,8 @@ async function retrieveLtmBasedOnStrategy(
               })),
           );
         } else {
-          // 重排序失败或无结果，则退回到使用初始向量搜索结果 (也应用情感增强)
           console.warn(
-            "   [LTM Retrieve] -> ⚠️ 重排序失败或无结果，退回到初始向量搜索结果。",
+            "   [LTM Retrieve][日志] -> ⚠️ 重排序失败或无结果，退回到初始向量搜索结果。",
           );
           const emotionallyEnhancedInitial = enhanceMemoriesWithEmotion(
             initialMemories.map((m) => ({
@@ -756,29 +792,27 @@ async function retrieveLtmBasedOnStrategy(
           );
         }
       } else {
-        console.log("   [LTM Retrieve] -> ℹ️ 初始向量搜索无结果。");
+        console.log("   [LTM Retrieve][调试] -> ℹ️ 初始向量搜索无结果。");
       }
 
-      // 情感相关记忆补充 (LTM_NOW策略下也执行)
       await supplementWithEmotionalMemories(
         retrievedItems,
         message,
-        searchVector, // Reuse the vector
+        searchVector,
         contextId,
         messageSentiment,
       );
     } catch (error) {
       console.error(
-        `❌ [LTM Retrieve] LTM_NOW 检索过程中出错 (${contextId}):`,
+        `❌ [LTM Retrieve][错误] LTM_NOW 检索过程中出错 (${contextId}):`,
         error instanceof Error ? error.message : error,
-        error, // Log full error
+        error,
       );
     }
   } else if (strategy === "LTM_RECENT") {
-    // LTM_RECENT: 获取最近的记忆 + 情感增强 + 可能的情感补充
     try {
       console.log(
-        `   [LTM Retrieve] -> 🕒 获取最近 ${config.ragRecentLtmLimit} 条 LTM (RAG 上下文: ${contextId})...`,
+        `   [LTM Retrieve][调试] -> 🕒 获取最近 ${config.ragRecentLtmLimit} 条 LTM (RAG 上下文: ${contextId})...`,
       );
       const scrollResult = await qdrantClient.scroll(
         config.qdrantCollectionName,
@@ -792,8 +826,10 @@ async function retrieveLtmBasedOnStrategy(
         },
       );
       console.log(
-        `   [调试 LTM Retrieve] 最近记忆滚动查询找到 ${scrollResult.points.length} 个点 (上下文: ${contextId})。`,
+        `   [LTM Retrieve][调试] 最近记忆滚动查询找到 ${scrollResult.points.length} 个点 (上下文: ${contextId})。`,
       );
+      initialMemories = scrollResult.points as any; // Store scrolled points
+      seedMemoryIds = initialMemories.slice(0, 2).map((m) => m.id.toString()); // 取最近的1-2个作为种子
 
       if (scrollResult.points.length > 0) {
         scrollResult.points.sort((a, b) =>
@@ -820,15 +856,14 @@ async function retrieveLtmBasedOnStrategy(
             })),
         );
         console.log(
-          `   [LTM Retrieve] -> ✅ 获取并情感增强排序了 ${retrievedItems.length} 条最近记忆。`,
+          `   [LTM Retrieve][调试] -> ✅ 获取并情感增强排序了 ${retrievedItems.length} 条最近记忆。`,
         );
       } else {
         console.log(
-          `   [LTM Retrieve] -> ℹ️ 在 RAG 上下文 ${contextId} 中未找到最近的 LTM。`,
+          `   [LTM Retrieve][日志] -> ℹ️ 在 RAG 上下文 ${contextId} 中未找到最近的 LTM。`,
         );
       }
 
-      // 情感相关记忆补充
       const searchVector = await embeddings.embedQuery(message.text);
       await supplementWithEmotionalMemories(
         retrievedItems,
@@ -839,20 +874,70 @@ async function retrieveLtmBasedOnStrategy(
       );
     } catch (error) {
       console.error(
-        `❌ [LTM Retrieve] LTM_RECENT 检索过程中出错 (${contextId}):`,
+        `❌ [LTM Retrieve][错误] LTM_RECENT 检索过程中出错 (${contextId}):`,
         error instanceof Error ? error.message : error,
-        error, // Log full error
+        error,
       );
     }
   }
 
-  // --- 补充通用对话记忆 ---
+  // --- **记忆网络激活整合** ---
+  if (seedMemoryIds.length > 0) {
+    console.log(
+      `   [LTM Retrieve][调试] -> 🕸️ 开始记忆网络激活 (种子: ${
+        seedMemoryIds.join(", ")
+      })...`,
+    );
+    try {
+      // 调用记忆网络激活函数
+      const activationResult = await memoryNetwork.activateMemoryNetwork(
+        seedMemoryIds[0], // 优先使用第一个种子
+        2, // 激活深度
+        0.4, // 最小激活强度阈值
+      );
+
+      console.log(
+        `   [LTM Retrieve][调试] -> 🕸️ 记忆网络激活完成，激活了 ${activationResult.activatedMemories.length} 个记忆。`,
+      );
+
+      if (activationResult.activatedMemories.length > 0) {
+        const existingIds = new Set(retrievedItems.map((item) => item.id));
+        const activatedLtmItems: LtmContextItem[] = activationResult
+          .activatedMemories
+          .filter((actMem) =>
+            !existingIds.has(actMem.memoryId) &&
+            actMem.memoryId !== seedMemoryIds[0]
+          ) // 过滤掉种子和已有的
+          .map((actMem) => ({
+            id: actMem.memoryId,
+            payload: actMem.payload,
+            activation_score: actMem.activationStrength,
+            source: "activated" as "activated", // 明确类型
+          }));
+
+        console.log(
+          `   [LTM Retrieve][调试] -> 🕸️ 新增 ${activatedLtmItems.length} 条来自记忆网络的记忆。`,
+        );
+        // 合并到 retrievedItems
+        retrievedItems.push(...activatedLtmItems);
+      }
+    } catch (networkError) {
+      console.error(
+        `❌ [LTM Retrieve][错误] 调用记忆网络时出错:`,
+        networkError,
+      );
+    }
+  } else {
+    console.log("   [LTM Retrieve][调试] -> 🕸️ 无种子记忆，跳过记忆网络激活。");
+  }
+
+  // --- 补充通用对话记忆 (逻辑保持不变) ---
   const needsSupplement = retrievedItems.length < config.ragMaxMemoriesInPrompt;
   const supplementLimit = config.ragMaxMemoriesInPrompt - retrievedItems.length;
 
   if (needsSupplement && supplementLimit > 0) {
     console.log(
-      `   [LTM Retrieve] -> ℹ️ (${strategy})结果不足 ${config.ragMaxMemoriesInPrompt} 条，尝试补充通用相关记忆 (不过滤上下文)...`,
+      `   [LTM Retrieve][调试] -> ℹ️ (${strategy})结果不足 ${config.ragMaxMemoriesInPrompt} 条，尝试补充通用相关记忆 (不过滤上下文)...`,
     );
     try {
       const searchVector = await embeddings.embedQuery(message.text);
@@ -861,7 +946,7 @@ async function retrieveLtmBasedOnStrategy(
         ? { must_not: [{ has_id: existingIds }] }
         : {};
       console.log(
-        `   [调试 LTM Retrieve] 补充搜索过滤器: ${
+        `   [LTM Retrieve][调试] 补充搜索过滤器: ${
           JSON.stringify(supplementFilter)
         }`,
       );
@@ -873,7 +958,7 @@ async function retrieveLtmBasedOnStrategy(
         supplementFilter,
       );
       console.log(
-        `   [调试 LTM Retrieve] 补充搜索找到 ${supplementMemories.length} 条结果。`,
+        `   [LTM Retrieve][调试] 补充搜索找到 ${supplementMemories.length} 条结果。`,
       );
 
       if (supplementMemories.length > 0) {
@@ -886,14 +971,14 @@ async function retrieveLtmBasedOnStrategy(
           })),
         );
         console.log(
-          `   [LTM Retrieve] -> ✅ 补充了 ${supplementMemories.length} 条通用记忆。`,
+          `   [LTM Retrieve][调试] -> ✅ 补充了 ${supplementMemories.length} 条通用记忆。`,
         );
       } else {
-        console.log("   [LTM Retrieve] -> ℹ️ 未找到可补充的通用记忆。");
+        console.log("   [LTM Retrieve][调试] -> ℹ️ 未找到可补充的通用记忆。");
       }
     } catch (error) {
       console.error(
-        `❌ [LTM Retrieve] 补充通用记忆时出错:`,
+        `❌ [LTM Retrieve][错误] 补充通用记忆时出错:`,
         error instanceof Error ? error.message : error,
       );
     }
@@ -901,8 +986,9 @@ async function retrieveLtmBasedOnStrategy(
 
   // --- 最终限制、排序和去重 ---
   retrievedItems.sort((a, b) => {
-    const scoreA = a.rerank_score ?? a.score ?? -Infinity;
-    const scoreB = b.rerank_score ?? b.score ?? -Infinity;
+    // 优先考虑 rerank score, 其次是 activation score, 最后是原始 score, 再是时间戳
+    const scoreA = a.rerank_score ?? a.activation_score ?? a.score ?? -Infinity;
+    const scoreB = b.rerank_score ?? b.activation_score ?? b.score ?? -Infinity;
     if (scoreB !== scoreA) return scoreB - scoreA;
     return (b.payload.timestamp || 0) - (a.payload.timestamp || 0);
   });
@@ -912,7 +998,7 @@ async function retrieveLtmBasedOnStrategy(
   );
   const finalItems = uniqueItems.slice(0, config.ragMaxMemoriesInPrompt);
 
-  // --- 为最终结果添加时间上下文和衰减因子 ---
+  // --- 为最终结果添加时间上下文和衰减因子 (保持不变) ---
   const finalItemsWithTemporal = await enhanceMemoriesWithTemporalContext(
     finalItems,
     message.userId,
@@ -921,25 +1007,30 @@ async function retrieveLtmBasedOnStrategy(
   );
 
   console.log(
-    `   [调试 LTM Retrieve] 最终 LTM 列表 (共 ${finalItemsWithTemporal.length} 条，已排序去重和时间增强):`,
+    `   [LTM Retrieve][调试] 最终 LTM 列表 (共 ${finalItemsWithTemporal.length} 条，已排序/去重/时间增强/记忆网络增强):`,
   );
   finalItemsWithTemporal.forEach((item, idx) => {
+    const scoreDisplay = item.rerank_score?.toFixed(4) ??
+      item.activation_score?.toFixed(4) ??
+      item.score?.toFixed(4) ?? "N/A";
     console.log(
-      `     [${idx + 1}] ID: ${item.id}, Src: ${item.source}, Score: ${
-        item.rerank_score?.toFixed(4) ?? item.score?.toFixed(4) ?? "N/A"
-      }, Time: ${item.temporal_context || "N/A"}, Decay: ${
+      `     [${
+        idx + 1
+      }] ID: ${item.id}, Src: ${item.source}, Score: ${scoreDisplay}, Time: ${
+        item.temporal_context || "N/A"
+      }, Decay: ${
         item.decay_factor?.toFixed(2) ?? "N/A"
       }, Type: ${item.payload.memory_type}`,
     );
   });
 
   console.log(
-    `✅ [LTM Retrieve] LTM 检索完成，最终返回 ${finalItemsWithTemporal.length} 条记忆 (策略: ${strategy})。`,
+    `✅ [LTM Retrieve][日志] LTM 检索完成，最终返回 ${finalItemsWithTemporal.length} 条记忆 (策略: ${strategy})。`,
   );
   return finalItemsWithTemporal;
 }
 
-/** 辅助函数：补充情感相关记忆 */
+/** 辅助函数：补充情感相关记忆 (保持不变) */
 async function supplementWithEmotionalMemories(
   retrievedItems: LtmContextItem[],
   message: ChatMessageInput, // Contains RAG Context ID
@@ -955,7 +1046,7 @@ async function supplementWithEmotionalMemories(
   const supplementLimit = config.ragMaxMemoriesInPrompt - retrievedItems.length;
 
   if (needsSupplement && supplementLimit > 0 && config.timePerception.enabled) {
-    console.log("   [LTM Retrieve] -> 🌈 尝试补充情感相关记忆...");
+    console.log("   [LTM Retrieve][调试] -> 🌈 尝试补充情感相关记忆...");
     try {
       const valenceRange: [number, number] = messageSentiment.valence > 0.3
         ? [0.3, 1.0]
@@ -969,10 +1060,9 @@ async function supplementWithEmotionalMemories(
         messageSentiment.emotionDimensions,
       );
 
-      // Filter out already retrieved items
       const existingIds = new Set(retrievedItems.map((item) => item.id));
       const emotionFilterBase: Schemas["Filter"] = {
-        must: [ // Filter by RAG context ID
+        must: [
           { key: "source_context", match: { value: contextId } },
         ],
         must_not: existingIds.size > 0
@@ -988,23 +1078,18 @@ async function supplementWithEmotionalMemories(
           valenceRange,
           arousalRange,
           dominantEmotion,
-          contextFilter: contextId, // Redundant with filter below, but kept for clarity
+          contextFilter: contextId,
           minimumScore: 0.5,
         },
-        // Pass the base filter to searchMemoriesByEmotion if it supports it,
-        // otherwise apply it inside searchMemoriesByEmotion if needed.
-        // Assuming searchMemoriesByEmotion internally combines with base filter logic.
-        // If not, the logic in searchMemoriesByEmotion needs adjustment.
       );
 
-      // Filter again just in case (if searchMemoriesByEmotion doesn't handle existing IDs)
       const newEmotionalMemories = emotionalMemories.filter(
         (mem) => !existingIds.has(mem.id.toString()),
       );
 
       if (newEmotionalMemories.length > 0) {
         console.log(
-          `   [LTM Retrieve] -> ✨ 补充了 ${newEmotionalMemories.length} 条情感相关记忆。`,
+          `   [LTM Retrieve][调试] -> ✨ 补充了 ${newEmotionalMemories.length} 条情感相关记忆。`,
         );
         retrievedItems.push(
           ...newEmotionalMemories.map((mem): LtmContextItem => ({
@@ -1015,18 +1100,18 @@ async function supplementWithEmotionalMemories(
           })),
         );
       } else {
-        console.log("   [LTM Retrieve] -> ℹ️ 未找到可补充的情感记忆。");
+        console.log("   [LTM Retrieve][调试] -> ℹ️ 未找到可补充的情感记忆。");
       }
     } catch (emotionalError) {
       console.error(
-        "   [LTM Retrieve] -> ❌ 补充情感记忆时出错:",
+        "   [LTM Retrieve][错误] -> ❌ 补充情感记忆时出错:",
         emotionalError,
       );
     }
   }
 }
 
-/** 辅助函数：基于情感状态增强记忆列表排序 */
+/** 辅助函数：基于情感状态增强记忆列表排序 (保持不变) */
 function enhanceMemoriesWithEmotion<
   T extends { id: string | number; score?: number; payload: MemoryPayload },
 >(
@@ -1044,28 +1129,10 @@ function enhanceMemoriesWithEmotion<
       memory.payload,
       messageSentiment,
     );
-    const originalScore = memory.score ?? 0; // Handles undefined score
-
-    // Weighted average: Adjust score based on emotional match.
-    // Give emotional match a weight (e.g., 30%)
+    const originalScore = memory.score ?? 0;
     const emotionalWeight = 0.3;
-    // Avoid division by zero or negative scores influencing inappropriately
-    const baseScore = Math.max(0, originalScore); // Use 0 if score is negative or undefined for base calculation
-
-    // If original score exists and is meaningful (e.g., > 0 for similarity scores)
-    // let adjustedScore = originalScore;
-    // if (originalScore > 0) {
-    //     adjustedScore = originalScore * (1 - emotionalWeight) + emotionalMatch * emotionalWeight * originalScore;
-    // } else {
-    // If original score is 0 or negative (like timestamp), add emotional match scaled differently
-    // This needs careful tuning based on expected score range
-    // Simple additive boost based on match, scaled arbitrarily
-    //    adjustedScore = originalScore + (emotionalMatch - 0.5) * 0.1; // Boost/penalize slightly based on match deviation from neutral 0.5
-    //}
-
-    // Simpler approach: Boost score by a factor of emotional match
-    // Factor = 1 + (match - 0.5) * weight_factor. Match=0.5 -> factor=1. Match=1 -> factor=1+0.5*wf. Match=0 -> factor=1-0.5*wf
-    const boostFactor = 1 + (emotionalMatch - 0.5) * 0.4; // e.g., 40% weight factor on deviation
+    const baseScore = Math.max(0, originalScore);
+    const boostFactor = 1 + (emotionalMatch - 0.5) * 0.4;
     const adjustedScore = originalScore * boostFactor;
 
     return { ...memory, score: adjustedScore };
@@ -1076,7 +1143,7 @@ function enhanceMemoriesWithEmotion<
   );
 }
 
-/** 辅助函数：计算两个情感状态之间的匹配度 */
+/** 辅助函数：计算两个情感状态之间的匹配度 (保持不变) */
 function calculateEmotionalMatch(
   memoryPayload: MemoryPayload,
   messageSentiment: {
@@ -1115,22 +1182,20 @@ function calculateEmotionalMatch(
   if (magnitudeA > 0 && magnitudeB > 0) {
     const cosineSim = dotProduct /
       (Math.sqrt(magnitudeA) * Math.sqrt(magnitudeB));
-    dimensionSimilarity = (cosineSim + 1) / 2; // Normalize cosine similarity [-1, 1] to [0, 1]
-    // Clamp value just in case of floating point issues
+    dimensionSimilarity = (cosineSim + 1) / 2;
     dimensionSimilarity = Math.max(0, Math.min(1, dimensionSimilarity));
   }
 
-  // Weighted average: Valence 40%, Arousal 20%, Dimensions 40%
   return valenceMatch * 0.4 + arousalMatch * 0.2 + dimensionSimilarity * 0.4;
 }
 
-/** 步骤 4: 基于记忆、洞见、状态生成回应 (增强版) */
+/** 步骤 4: 基于记忆、洞见、状态生成回应 (增强版 - 集成社交认知和自我概念) */
 async function generateResponseWithMemory(
   message: ChatMessageInput, // 包含 RAG Context ID
   stmHistory: ChatMessageInput[],
   retrievedLtm: LtmContextItem[], // 已包含时间上下文和衰减因子
   ltmStrategy: LtmStrategy,
-  _personaMode: string, // 不再直接使用
+  // personaMode 不再直接使用，由社交认知和自我概念驱动
   platform: string,
   insights: Insight[] = [],
   timeMarkers: TimeMarker[] = [],
@@ -1141,10 +1206,14 @@ async function generateResponseWithMemory(
     posture: string;
     energy: string;
   } = { metaphorical: "", sensory: "", posture: "", energy: "" },
-  relationshipState: RelationshipState | null = null,
+  // 使用新的关系状态类型
+  relationshipState: EnhancedRelationshipState | null = null,
+  // 新增：自我模型
+  selfModel: SelfModel | null = null,
 ): Promise<string> {
+  const ragContextId = message.contextId; // RAG Context ID
   console.log(
-    `🧠 [Generator] 正在融合记忆、洞见和状态生成回复 (RAG 上下文: ${message.contextId})...`,
+    `🧠 [Generator][日志] 正在融合记忆、洞见和状态生成回复 (RAG 上下文: ${ragContextId})...`,
   );
 
   // --- 构建 Prompt 上下文 ---
@@ -1153,8 +1222,8 @@ async function generateResponseWithMemory(
     .slice(-5)
     .map((msg, i) =>
       `[近期对话 ${i + 1} | ${
-        msg.userId === message.userId ? "You" : msg.userId.substring(0, 4) // Mask user ID slightly
-      }]: ${msg.text.substring(0, 100)}...` // Limit length
+        msg.userId === message.userId ? "You" : msg.userId.substring(0, 4)
+      }]: ${msg.text.substring(0, 100)}...`
     )
     .join("\n");
 
@@ -1164,6 +1233,7 @@ async function generateResponseWithMemory(
   const ltmContext = retrievedLtm.length > 0
     ? retrievedLtm.map((mem, i) => {
       const scoreDisplay = mem.rerank_score?.toFixed(4) ??
+        mem.activation_score?.toFixed(4) ?? // 显示激活分数
         mem.score?.toFixed(4) ?? "N/A";
       const timeDisplay = mem.temporal_context || "未知时间";
       const clarity = mem.decay_factor
@@ -1173,14 +1243,15 @@ async function generateResponseWithMemory(
         ? "最近"
         : mem.source === "emotional"
         ? "情感相关"
+        : mem.source === "activated" // 显示激活来源
+        ? "网络激活"
         : "相关";
-      // Limit content length in prompt
       const contentPreview = mem.payload.text_content.length > 150
         ? mem.payload.text_content.substring(0, 150) + "..."
         : mem.payload.text_content;
       return `[${sourceLabel}记忆 ${
         i + 1
-      } | ${timeDisplay} | ${clarity} | 得分: ${scoreDisplay}]: ${contentPreview}`;
+      } | ${timeDisplay} | ${clarity} | 得分: ${scoreDisplay} | 类型: ${mem.payload.memory_type}]: ${contentPreview}`;
     }).join("\n")
     : "   （无相关长期记忆）";
 
@@ -1189,7 +1260,7 @@ async function generateResponseWithMemory(
       `[思维洞见 ${i + 1} | 类型: ${insight.insight_type}]: "${
         insight.content.substring(0, 150)
       }..."`
-    ).join("\n") // Limit length
+    ).join("\n")
     : "   （无相关洞见）";
 
   const timeMarkersContext = timeMarkers.length > 0
@@ -1217,13 +1288,27 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
 `;
   }
 
-  const relationshipContext = relationshipState && config.socialDynamics.enabled
-    ? `[与此用户的关系]: ${
-      getRelationshipSummary(relationshipState)
-    } (互动风格: ${relationshipState.current_interaction_style}, 界限: ${
-      relationshipState.boundary_level.toFixed(1)
-    })`
-    : "   （关系状态未知或默认）";
+  // --- 新增：社交认知和自我概念信息注入 ---
+  // 使用 socialCognition 实例的方法
+  const relationshipSummary = socialCognition.getRelationshipSummary(
+    relationshipState,
+  );
+  console.log(`[Generator][调试] 生成的关系摘要: ${relationshipSummary}`);
+
+  let selfConceptSummary = "   （自我概念信息未加载）";
+  if (selfModel) {
+    const topValues = Object.entries(selfModel.values)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([domain, score]) => `${domain}(${score.toFixed(2)})`)
+      .join(", ");
+    selfConceptSummary =
+      `[核心自我概念]: 主要价值观: ${topValues}. 自我意识水平: ${
+        selfModel.selfAwareness.toFixed(2)
+      }.`;
+    // 可以选择性地加入人格特质或起源摘要
+  }
+  console.log(`[Generator][调试] 生成的自我概念摘要: ${selfConceptSummary}`);
 
   const currentMessageSentiment = await analyzeMessageSentiment(message.text);
   const emotionKeywords = getEmotionKeywords(currentMessageSentiment);
@@ -1269,9 +1354,8 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
 * **对话用户:** ${message.userId}${
     message.userId === config.discordOwnerId ? " (主人)" : ""
   }
-* **当前关系:** ${relationshipContext}
-* **对话上下文 (RAG ID):** ${message.contextId} (${
-    message.contextId.startsWith("work_") ? "工作场景" : "非工作场景"
+* **当前关系:** ${relationshipSummary}  * **对话上下文 (RAG ID):** ${ragContextId} (${
+    ragContextId.startsWith("work_") ? "工作场景" : "非工作场景"
   })
 * **身体状态感知:** ${bodyStateContext}
 * **用户最新消息:** ${message.text}
@@ -1280,21 +1364,21 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
   })
 * **核心任务:** 针对用户的最新消息，以爱丽丝的身份给出自然、连贯、个性化且符合当前情境的回应。
 
-## 辅助信息 (供你参考，不要直接复述)
-1.  **最近对话历史 (STM):**
+## 内部状态与认知 (供你参考，不要直接复述)
+1.  **核心自我概念:** ${selfConceptSummary} 2.  **最近对话历史 (STM):**
 ${stmContext || "   （无）"}
-2.  **${ltmSectionTitle}:**
+3.  **${ltmSectionTitle}:**
 ${ltmContext}
-3.  **思维洞见:**
+4.  **思维洞见:**
 ${insightsContext}
-4.  **相关时间标记:**
+5.  **相关时间标记:**
 ${timeMarkersContext}
 
 ## 回应要求
 * **深度角色扮演:** 彻底代入爱丽丝，用“我”来自称，从她的视角、感受和思考方式出发进行回应。
-* **情境融合:** 自然地结合当前用户、关系、上下文、情绪、身体状态、时间和记忆信息，使回应高度个性化。
+* **情境融合:** 自然地结合当前用户、关系、上下文、情绪、身体状态、时间和记忆信息，使回应高度个性化。**特别注意结合提供的核心自我概念，让回应体现出我的价值观和自我认知。**
 * **动态表达:**
-    * **社交适应:** 根据关系状态调整语气、亲近感和用词。对主人要体现傲娇和关心。
+    * **社交适应:** 根据关系摘要调整语气、亲近感和用词。对主人要体现傲娇和关心。
     * **情感呼应:** 回应用户的同时， subtly 地流露你自己的情感状态（如果合适）。
     * **身体感融入:** 适当使用身体隐喻或描述来表达你的状态（如疲惫时简洁回应，兴奋时语速稍快，思考时加入停顿）。
     * **时间感体现:** 使用自然的时间表达（“刚才”、“几天前”），对久远的记忆表现出适当的模糊性（除非是重要记忆）。
@@ -1307,7 +1391,7 @@ ${platformInstructions}
 `;
 
   console.log(
-    `[调试 Generator] 发送给 LLM 的最终 Prompt:\n------BEGIN PROMPT------\n${generationPrompt}\n------END PROMPT------`,
+    `[Generator][调试] 发送给 LLM 的最终 Prompt (已包含社交认知和自我概念):\n------BEGIN PROMPT------\n${generationPrompt}\n------END PROMPT------`,
   );
 
   let responseText = "[默认回复：处理中...]";
@@ -1318,9 +1402,9 @@ ${platformInstructions}
     responseText = typeof llmResponse === "string"
       ? llmResponse
       : (llmResponse.content as string) ?? "";
-    console.log("   [Generator] ✅ LLM 回复已生成。");
+    console.log("   [Generator][日志] ✅ LLM 回复已生成。");
 
-    console.log("   [Generator] ✨ 应用人类语言模式...");
+    console.log("   [Generator][日志] ✨ 应用人类语言模式...");
     const isWorkContext = message.contextId.includes("work_");
     const isOwner = message.userId === config.discordOwnerId;
     const isQuestionResponse = message.text.includes("?") ||
@@ -1351,23 +1435,25 @@ ${platformInstructions}
           responseText,
           humanizeContext,
         );
-        console.log("   [Generator] ✅ 应用高级人类语言模式成功。");
+        console.log("   [Generator][日志] ✅ 应用高级人类语言模式成功。");
       } catch (advError) {
         console.error(
-          "   [Generator] ⚠️ 高级人类化处理失败，回退到基础处理:",
+          "   [Generator][错误] ⚠️ 高级人类化处理失败，回退到基础处理:",
           advError,
         );
         humanizedResponse = humanizeText(responseText, humanizeContext);
-        console.log("   [Generator] ✅ 应用基础人类语言模式成功 (回退)。");
+        console.log(
+          "   [Generator][日志] ✅ 应用基础人类语言模式成功 (回退)。",
+        );
       }
     } else {
       humanizedResponse = humanizeText(responseText, humanizeContext);
-      console.log("   [Generator] ✅ 应用基础人类语言模式成功。");
+      console.log("   [Generator][日志] ✅ 应用基础人类语言模式成功。");
     }
 
     return humanizedResponse || responseText || "[LLM 返回了空内容]";
   } catch (error) {
-    console.error("❌ [Generator] 调用 LLM 或人类化处理时出错:", error);
+    console.error("❌ [Generator][错误] 调用 LLM 或人类化处理时出错:", error);
     let errorResponse = "[抱歉，处理请求时遇到了意外情况。请稍后再试。]";
     if (bodyState && bodyState.coherence_level < 0.3) {
       errorResponse = "[嗯...抱歉，我现在思绪有点混乱，请稍等一下再问我。]";
@@ -1378,7 +1464,7 @@ ${platformInstructions}
   }
 }
 
-/** 辅助函数：格式化情感状态 */
+/** 辅助函数：格式化情感状态 (保持不变) */
 function formatEmotionState(sentiment: {
   valence: number;
   arousal: number;
@@ -1404,7 +1490,7 @@ function formatEmotionState(sentiment: {
   return `${valenceDesc}/${arousalDesc}${dominantDesc}`;
 }
 
-/** 辅助函数：获取情感关键词 */
+/** 辅助函数：获取情感关键词 (保持不变) */
 function getEmotionKeywords(sentiment: {
   valence: number;
   arousal: number;
@@ -1427,7 +1513,7 @@ function getEmotionKeywords(sentiment: {
   return [...new Set(keywords)].slice(0, 3);
 }
 
-/** 检测重要消息，判断是否应创建时间标记 */
+/** 检测重要消息，判断是否应创建时间标记 (保持不变) */
 async function detectImportantMessage(messageText: string): Promise<
   {
     description: string;
@@ -1478,9 +1564,8 @@ async function detectImportantMessage(messageText: string): Promise<
     const content = typeof response === "string"
       ? response
       : (response.content as string);
-    // Added guard against empty/null content
     if (!content) {
-      console.warn("[detectImportantMessage] LLM returned empty content.");
+      console.warn("[辅助][日志] 检测重要消息 LLM 返回空内容。");
       return null;
     }
     const result = JSON.parse(content.trim().replace(/```json|```/g, ""));
@@ -1494,13 +1579,13 @@ async function detectImportantMessage(messageText: string): Promise<
     }
     return null;
   } catch (error) {
-    console.error("检测重要消息时出错:", error);
+    console.error("❌ [辅助][错误] 检测重要消息时出错:", error);
     return null;
   }
 }
 
 // --------------------------------------------------------------------------
-// --- 核心处理函数：handleIncomingMessage ---
+// --- 核心处理函数：handleIncomingMessage (增强版) ---
 // --------------------------------------------------------------------------
 /**
  * 处理传入消息的核心函数 (包含所有增强逻辑)
@@ -1519,18 +1604,18 @@ export async function handleIncomingMessage(
   const sourceContextId = message.contextId; // 原始来源
 
   console.log(
-    `\n🚀 [Core] 开始处理消息 (用户: ${userId}, 来源: ${sourceContextId}, 初始RAG上下文: ${initialContextId})`,
+    `\n🚀 [Core][日志] 开始处理消息 (用户: ${userId}, 来源: ${sourceContextId}, 初始RAG上下文: ${initialContextId})`,
   );
 
   updateActiveUserContexts(userId, sourceContextId);
 
-  console.log(`   [Core] 1. 获取 STM...`);
+  console.log(`   [Core][日志] 1. 获取 STM...`);
   const stmHistory = await getStm(sourceContextId);
   console.log(
-    `   [Core]    - STM 记录数: ${stmHistory.length} (来源: ${sourceContextId})`,
+    `   [Core][调试]    - STM 记录数: ${stmHistory.length} (来源: ${sourceContextId})`,
   );
 
-  console.log(`   [Core] 2. 判断/更新 RAG 上下文...`);
+  console.log(`   [Core][日志] 2. 判断/更新 RAG 上下文...`);
   const ragContextId = await determineCurrentContext(
     userId,
     initialContextId,
@@ -1539,38 +1624,38 @@ export async function handleIncomingMessage(
     sourceContextId,
   );
   const messageForRag = { ...message, contextId: ragContextId };
-  console.log(`   [Core]    - 当前 RAG 上下文: ${ragContextId}`);
+  console.log(`   [Core][日志]    - 当前 RAG 上下文: ${ragContextId}`);
 
-  console.log(`   [Core] 3. 更新 STM (来源: ${sourceContextId})...`);
+  console.log(`   [Core][日志] 3. 更新 STM (来源: ${sourceContextId})...`);
   const updatedStm = await updateStm(sourceContextId, message); // Use original source ID for STM
 
   if (ltmWorker && config.qdrantCollectionName) {
-    console.log(`   [Core] 4. 异步提交 LTM 存储...`);
-    // Pass both RAG ID (for payload's source_context) and original ID (for worker logging/lookup if needed)
+    console.log(`   [Core][日志] 4. 异步提交 LTM 存储...`);
     ltmWorker.postMessage({
-      ...message, // original message data
-      contextId: ragContextId, // RAG context for payload
-      originalSourceContextId: sourceContextId, // Original source for worker info
+      ...message,
+      contextId: ragContextId,
+      originalSourceContextId: sourceContextId,
     });
   } else {
     console.warn(
-      `   [Core] 4. ⚠️ LTM Worker 未初始化或 Qdrant 未配置，跳过异步 LTM 存储。`,
+      `   [Core][日志] 4. ⚠️ LTM Worker 未初始化或 Qdrant 未配置，跳过异步 LTM 存储。`,
     );
   }
 
-  console.log(`   [Core] 5. 分析消息情感...`);
+  console.log(`   [Core][日志] 5. 分析消息情感...`);
   const messageSentiment = await analyzeMessageSentiment(message.text);
   console.log(
-    `   [Core]    - 情感分析结果: 效价=${
+    `   [Core][调试]    - 情感分析结果: 效价=${
       messageSentiment.valence.toFixed(2)
     }, 强度=${
       messageSentiment.arousal.toFixed(2)
     }, 主导=${messageSentiment.dominant_emotion}`,
   );
 
-  console.log(`   [Core] 6. 并行更新认知状态 (身体、关系、时间)...`);
+  console.log(`   [Core][日志] 6. 并行更新认知状态 (身体、关系、时间)...`);
   let updatedBodyState: VirtualPhysicalState | null = null;
-  let updatedRelationshipState: RelationshipState | null = null;
+  // --- 修改：使用新的关系状态类型 ---
+  let updatedRelationshipState: EnhancedRelationshipState | null = null;
   let conversationPace = 1.0;
   const stateUpdatePromises = [];
 
@@ -1582,40 +1667,41 @@ export async function handleIncomingMessage(
         { text: message.text, emotional_state: messageSentiment },
         false,
         kv,
-        loadedStopwordsSet,
+        loadedStopwordsSet, // 传递停用词集合
       )
         .then((state) => {
           updatedBodyState = state;
           console.log(
-            `   [Core]    - ✅ 身体状态更新完成 (能量: ${
+            `   [Core][调试]    - ✅ 身体状态更新完成 (能量: ${
               state?.energy_level.toFixed(2) ?? "N/A"
             })`,
           );
         })
         .catch((err) =>
-          console.error("   [Core]    - ❌ 更新身体状态失败:", err)
+          console.error("   [Core][错误]    - ❌ 更新身体状态失败:", err)
         ),
     );
   }
-  if (config.socialDynamics.enabled) {
+  // --- 修改：使用 socialCognition 实例更新关系 ---
+  if (config.socialDynamics.enabled) { // 仍用 socialDynamics 的配置项控制是否启用
     stateUpdatePromises.push(
-      analyzeInteractionImpact(
-        userId,
+      socialCognition.analyzeInteractionAndUpdateRelationship( // 调用 social_cognition 的方法
+        userId, // entityId 是对方用户ID
         { text: message.text, timestamp: message.timestamp || Date.now() },
         messageSentiment,
-        ragContextId,
-        kv,
+        ragContextId, // 传入 RAG Context ID
+        // kv // socialCognition 内部会访问 kv
       )
         .then((state) => {
           updatedRelationshipState = state;
           console.log(
-            `   [Core]    - ✅ 关系状态更新完成 (风格: ${
+            `   [Core][调试]    - ✅ 关系状态更新完成 (风格: ${
               state?.current_interaction_style ?? "N/A"
-            }, 界限: ${state?.boundary_level.toFixed(1) ?? "N/A"})`,
+            }, 阶段: ${state?.stage ?? "N/A"})`,
           );
         })
         .catch((err) =>
-          console.error("   [Core]    - ❌ 更新关系状态失败:", err)
+          console.error("   [Core][错误]    - ❌ 更新关系状态失败:", err)
         ),
     );
   }
@@ -1631,32 +1717,48 @@ export async function handleIncomingMessage(
             kv,
           );
           console.log(
-            `   [Core]    - ✅ 时间状态更新完成 (记录交互, 感知速度: ${
+            `   [Core][调试]    - ✅ 时间状态更新完成 (记录交互, 感知速度: ${
               conversationPace.toFixed(2)
             })`,
           );
         } catch (err) {
-          console.error("   [Core]    - ❌ 更新时间状态失败:", err);
+          console.error("   [Core][错误]    - ❌ 更新时间状态失败:", err);
         }
       })(),
     );
   }
-  await Promise.all(stateUpdatePromises);
+  // --- 新增：获取自我模型 ---
+  let currentSelfModel: SelfModel | null = null;
+  stateUpdatePromises.push(
+    selfConceptManager.getSelfModel()
+      .then((model) => {
+        currentSelfModel = model;
+        console.log(
+          `   [Core][调试]    - ✅ 获取自我模型成功 (v${model?.version})`,
+        );
+      })
+      .catch((err) =>
+        console.error("   [Core][错误]    - ❌ 获取自我模型失败:", err)
+      ),
+  );
 
-  console.log(`   [Core] 7. 决定 LTM 策略...`);
+  await Promise.all(stateUpdatePromises);
+  console.log(`   [Core][日志]    - 认知状态更新完成。`);
+
+  console.log(`   [Core][日志] 7. 决定 LTM 策略...`);
   const ltmStrategy = await decideLtmStrategy(ragContextId);
 
-  console.log(`   [Core] 8. 检索 LTM...`);
+  console.log(`   [Core][日志] 8. 检索 LTM (含记忆网络增强)...`);
   const retrievedLtm = await retrieveLtmBasedOnStrategy(
     ltmStrategy,
     messageForRag,
     messageSentiment,
   );
 
-  // --- Setup promises for async tasks BEFORE waiting ---
+  // --- 并行获取洞见、时间标记、身体表达 (保持不变) ---
   const insightPromise = config.mindWandering.enabled
     ? retrieveRelevantInsights(messageForRag, 2).catch((err) => {
-      console.error("   [Core]    - ❌ 异步检索洞见失败:", err);
+      console.error("   [Core][错误]    - ❌ 异步检索洞见失败:", err);
       return [];
     })
     : Promise.resolve([]);
@@ -1664,7 +1766,7 @@ export async function handleIncomingMessage(
   const timeMarkerPromise = config.timePerception.enabled
     ? findRelevantTimeMarkers(userId, ragContextId, message.text, kv).catch(
       (err) => {
-        console.error("   [Core]    - ❌ 异步检索时间标记失败:", err);
+        console.error("   [Core][错误]    - ❌ 异步检索时间标记失败:", err);
         return [];
       },
     )
@@ -1673,14 +1775,14 @@ export async function handleIncomingMessage(
   const bodyExpressionPromise =
     (config.virtualEmbodiment.enabled && updatedBodyState)
       ? generateEmbodiedExpressions(updatedBodyState).catch((err) => {
-        console.error("   [Core]    - ❌ 异步生成身体表达失败:", err);
+        console.error("   [Core][错误]    - ❌ 异步生成身体表达失败:", err);
         return {
           metaphorical: "",
           sensory: "",
           posture: "",
           energy: generateBodyStateExpression(updatedBodyState!),
         };
-      }) // Fallback on error
+      })
       : Promise.resolve({
         metaphorical: "",
         sensory: "",
@@ -1688,14 +1790,14 @@ export async function handleIncomingMessage(
         energy: "",
       });
 
-  // --- Trigger async tasks that don't need to block response generation ---
+  // --- 异步触发时间标记和思维漫游 (保持不变) ---
   if (config.timePerception.enabled) {
-    console.log(`   [Core] 10. 异步检测重要消息...`);
+    console.log(`   [Core][日志] 10. 异步检测重要消息...`);
     detectImportantMessage(message.text)
       .then((importantInfo) => {
         if (importantInfo) {
           console.log(
-            `   [Core]    - ℹ️ 检测到重要消息，正在添加时间标记: "${importantInfo.description}"`,
+            `   [Core][调试]    - ℹ️ 检测到重要消息，正在添加时间标记: "${importantInfo.description}"`,
           );
           return addTimeMarker(
             userId,
@@ -1708,15 +1810,14 @@ export async function handleIncomingMessage(
         }
       })
       .catch((err) =>
-        console.error("   [Core]    - ❌ 检测重要消息失败:", err)
+        console.error("   [Core][错误]    - ❌ 检测重要消息失败:", err)
       );
   }
   if (
     config.mindWandering.enabled &&
     Math.random() < (config.mindWandering.triggerProbability || 0.15)
   ) {
-    console.log(`   [Core] 13. 概率触发思维漫游 (异步)...`);
-    // Don't await this, let it run in background
+    console.log(`   [Core][日志] 13. 概率触发思维漫游 (异步)...`);
     (async () => {
       const lastWander = await getLastWanderingTime(userId, ragContextId);
       const cooldownMs = (config.mindWandering.cooldownMinutes || 5) * 60 *
@@ -1736,34 +1837,37 @@ export async function handleIncomingMessage(
           const result = await triggerMindWandering(wanderingContext);
           if (result.insights.length > 0) {
             console.log(
-              `   [Core]    - ✨ 后台思维漫游完成，生成 ${result.insights.length} 条洞见。`,
+              `   [Core][调试]    - ✨ 后台思维漫游完成，生成 ${result.insights.length} 条洞见。`,
             );
             await setLastWanderingTime(userId, ragContextId, Date.now());
           } else {
-            console.log(`   [Core]    - 后台思维漫游未生成洞见或被跳过。`);
+            console.log(
+              `   [Core][调试]    - 后台思维漫游未生成洞见或被跳过。`,
+            );
           }
         } catch (err) {
-          console.error("   [Core]    - ❌ 后台思维漫游执行失败:", err);
-          // Update time even on error to prevent retrying too soon
+          console.error("   [Core][错误]    - ❌ 后台思维漫游执行失败:", err);
           await setLastWanderingTime(userId, ragContextId, Date.now());
         }
       } else {
         console.log(
-          `   [Core]    - 思维漫游冷却中 (${
+          `   [Core][调试]    - 思维漫游冷却中 (${
             ((cooldownMs - (Date.now() - lastWander)) / 60000).toFixed(1)
           }分钟剩余)，跳过触发。`,
         );
       }
-    })(); // IIFE to run async code without await
+    })();
   } else {
-    console.log(`   [Core] 13. 跳过思维漫游触发 (概率、禁用或配置缺失)。`);
+    console.log(
+      `   [Core][日志] 13. 跳过思维漫游触发 (概率、禁用或配置缺失)。`,
+    );
   }
 
-  // --- Wait for blocking async tasks (Insights, Markers, Body Expressions) with timeout ---
+  // --- 等待关键异步任务并生成响应 ---
   console.log(
-    `   [Core] 12. 等待关键异步任务 (洞见/标记/身体表达) 并生成最终响应...`,
+    `   [Core][日志] 12. 等待关键异步任务 (洞见/标记/身体表达) 并生成最终响应...`,
   );
-  const asyncTimeout = 3000; // 3秒超时
+  const asyncTimeout = 3000;
   let relevantInsights: Insight[] = [];
   let relevantTimeMarkers: TimeMarker[] = [];
   let bodyExpressionsResult: any = {
@@ -1771,14 +1875,14 @@ export async function handleIncomingMessage(
     sensory: "",
     posture: "",
     energy: "",
-  }; // Default structure
+  };
 
   try {
     const results = await Promise.all([
       Promise.race([
         insightPromise,
         new Promise((resolve) => setTimeout(() => resolve([]), asyncTimeout)),
-      ]), // Timeout returns empty array
+      ]),
       Promise.race([
         timeMarkerPromise,
         new Promise((resolve) => setTimeout(() => resolve([]), asyncTimeout)),
@@ -1788,11 +1892,10 @@ export async function handleIncomingMessage(
         new Promise((resolve) =>
           setTimeout(() => resolve(bodyExpressionsResult), asyncTimeout)
         ),
-      ]), // Timeout returns default
+      ]),
     ]);
     relevantInsights = results[0] as Insight[];
     relevantTimeMarkers = results[1] as TimeMarker[];
-    // Ensure bodyExpressionsResult has the correct structure even on timeout/error
     const tempBodyExpr = results[2] as any;
     bodyExpressionsResult = (tempBodyExpr && typeof tempBodyExpr === "object" &&
         "energy" in tempBodyExpr)
@@ -1804,15 +1907,17 @@ export async function handleIncomingMessage(
         energy: updatedBodyState
           ? generateBodyStateExpression(updatedBodyState)
           : "",
-      }; // Fallback
+      };
 
     console.log(
-      `   [Core]     - 关键异步任务获取完成 (洞见: ${relevantInsights.length}, 标记: ${relevantTimeMarkers.length}, 身体表达: ${!!bodyExpressionsResult
+      `   [Core][调试]     - 关键异步任务获取完成 (洞见: ${relevantInsights.length}, 标记: ${relevantTimeMarkers.length}, 身体表达: ${!!bodyExpressionsResult
         .energy})`,
     );
   } catch (waitError) {
-    console.error(`   [Core]     - ❌ 等待关键异步任务时出错:`, waitError);
-    // Use empty arrays / default body expression if waiting failed
+    console.error(
+      `   [Core][错误]     - ❌ 等待关键异步任务时出错:`,
+      waitError,
+    );
     relevantInsights = [];
     relevantTimeMarkers = [];
     bodyExpressionsResult = {
@@ -1825,48 +1930,47 @@ export async function handleIncomingMessage(
     };
   }
 
-  // --- Generate Response ---
+  // --- 生成响应 (传入增强的状态信息) ---
   const finalResponse = await generateResponseWithMemory(
     messageForRag,
     updatedStm,
     retrievedLtm,
     ltmStrategy,
-    "", // personaMode
     platform,
     relevantInsights,
     relevantTimeMarkers,
     updatedBodyState,
-    bodyExpressionsResult, // Use the result from Promise.all/race
-    updatedRelationshipState,
+    bodyExpressionsResult,
+    updatedRelationshipState, // 传入更新后的关系状态
+    currentSelfModel, // 传入获取到的自我模型
   );
 
   const endTime = Date.now();
   console.log(
-    `✅ [Core] 消息处理完成 (总耗时: ${(endTime - startTime) / 1000} 秒)`,
+    `✅ [Core][日志] 消息处理完成 (总耗时: ${(endTime - startTime) / 1000} 秒)`,
   );
 
   return { responseText: finalResponse, newContextId: ragContextId };
 }
 
-// --- 主函数：程序入口 ---
+// --- 主函数：程序入口 (添加自我概念初始化) ---
 async function main() {
   console.log("==============================================");
-  console.log("  AI 人格核心 - 爱丽丝 v8.1 (LLM驱动评分)");
+  console.log("  AI 人格核心 - 爱丽丝 v9.0 (认知整合协调)"); // 版本更新
   console.log("==============================================");
   console.log("▶️ 系统初始化中...");
 
-  // 解析命令行参数
   const args = parse(Deno.args);
   const runDiscord = args.discord === true;
 
-  // 确保路径相对于你运行 deno 命令的项目根目录是正确的
   loadedStopwordsSet = await loadStopwordsFromFile("./data/stopwords-zh.json");
 
-  // --- 并行执行初始化任务 ---
+  console.log("[初始化][日志] 1. 初始化 Deno KV...");
+  await initializeKv(); // 首先等待 KV 初始化完成
+
   await Promise.all([
-    initializeKv(), // 初始化 STM 和状态存储
-    initializeLtmWorker(), // 初始化 LTM Worker
-    (async () => { // 初始化 Qdrant 检查
+    initializeLtmWorker(),
+    (async () => {
       try {
         await ensureCollectionExists(
           config.qdrantCollectionName,
@@ -1882,12 +1986,10 @@ async function main() {
         Deno.exit(1);
       }
     })(),
-    // 启动思维漫游功能 (如果启用)
     (async () => {
-      if (config.mindWandering?.enabled) { // 安全访问 enabled
+      if (config.mindWandering?.enabled) {
         try {
           await schedulePeriodicMindWandering(activeUserContexts);
-          // Note: schedulePeriodicMindWandering itself logs success/start message now
         } catch (error) {
           console.error("⚠️ 思维漫游系统初始化失败:", error);
         }
@@ -1895,102 +1997,91 @@ async function main() {
         console.log("ℹ️ 思维漫游系统已禁用或配置缺失。");
       }
     })(),
+    // --- 新增：初始化社交认知和自我概念管理器 ---
+    socialCognition.initialize().catch((err) =>
+      console.error("❌ 社交认知模块初始化失败:", err)
+    ),
+    selfConceptManager.initialize().catch((err) =>
+      console.error("❌ 自我概念模块初始化失败:", err)
+    ),
   ]);
 
   console.log("----------------------------------------------");
   console.log(`🚀 准备启动模式: ${runDiscord ? "Discord Bot" : "CLI"}`);
   console.log("----------------------------------------------");
 
-  // --- 根据模式启动相应的接口 ---
   if (runDiscord) {
     await startDiscord();
     console.log(
       "⏳ Discord Bot 正在运行，主程序将保持活动状态。按 Ctrl+C 退出。",
     );
-    // 保持进程活跃，直到被信号中断
-    await new Promise<void>(() => {}); // Keeps the process alive indefinitely
+    await new Promise<void>(() => {});
   } else {
     await startCli();
   }
 
-  // --- 清理逻辑 (通常在信号处理中执行) ---
   console.log("\n▶️ 主函数执行完毕 (CLI 模式) 或等待信号 (Discord 模式)...");
-  // Cleanup is handled by signal listener or unload event
 }
 
-// --- 脚本入口点 ---
+// --- 脚本入口点与清理 (保持不变) ---
 if (import.meta.main) {
-  // 定义清理函数
   const cleanup = () => {
     console.log("\n⏹️ 开始清理资源...");
     if (ltmWorker) {
       try {
-        ltmWorker.terminate(); // 尝试终止 LTM Worker
+        ltmWorker.terminate();
       } catch (_) { /* 忽略错误 */ }
       console.log("✅ LTM Worker 已终止。");
     }
     if (kv) {
       try {
-        kv.close(); // 尝试关闭 Deno KV 连接
+        kv.close();
       } catch (_) { /* 忽略错误 */ }
       console.log("✅ Deno KV 连接已关闭。");
     }
     console.log("⏹️ 清理完成。");
   };
 
-  // 运行主函数，并在出错时执行清理
   main().catch((error) => {
     console.error("❌ 主程序出现未捕获错误:", error);
-    cleanup(); // 发生错误时也尝试清理
-    Deno.exit(1); // 以错误码退出
+    cleanup();
+    Deno.exit(1);
   });
 
-  // 添加全局事件监听器以进行尽力而为的清理
   globalThis.addEventListener("unload", () => {
     console.log("⏹️ 检测到程序退出信号 ('unload' 事件)...");
-    cleanup(); // 尽力执行清理
+    cleanup();
     console.log("⏹️ 'unload' 事件处理尝试完成。");
   });
 
-  // 添加未处理的 Promise 拒绝监听器
   globalThis.addEventListener("unhandledrejection", (event) => {
     console.error("❌ 未处理的 Promise 拒绝:", event.reason);
-    event.preventDefault(); // 阻止默认行为（可能导致进程退出）
-    // 在这里可以考虑是否需要清理，但多次调用 cleanup 可能有问题
-    // cleanup();
-    // Deno.exit(1); // 可以选择在未处理拒绝时退出
+    event.preventDefault();
   });
 
-  // --- 添加信号监听器 ---
   try {
-    // 始终监听 SIGINT (Ctrl+C)，适用于所有平台
     Deno.addSignalListener("SIGINT", () => {
       console.log("\n⏹️ 收到 SIGINT (Ctrl+C)，正在优雅退出...");
-      cleanup(); // 执行清理
-      Deno.exit(0); // 正常退出
+      cleanup();
+      Deno.exit(0);
     });
     console.log("ℹ️ 已添加 SIGINT (Ctrl+C) 信号监听器。");
 
-    // --- 修改部分：只在非 Windows 平台尝试监听 SIGTERM ---
     if (Deno.build.os !== "windows") {
       try {
-        Deno.addSignalListener("SIGTERM", () => { // 处理终止信号
+        Deno.addSignalListener("SIGTERM", () => {
           console.log("\n⏹️ 收到 SIGTERM，正在优雅退出...");
-          cleanup(); // 执行清理
-          Deno.exit(0); // 正常退出
+          cleanup();
+          Deno.exit(0);
         });
         console.log("ℹ️ 已添加 SIGTERM 信号监听器 (非 Windows)。");
       } catch (termError) {
-        // 即使在非 Windows 平台，也可能因为权限等原因失败
         console.warn("⚠️ 无法添加 SIGTERM 信号监听器:", termError);
       }
     } else {
-      // 在 Windows 上明确跳过 SIGTERM 监听
       console.log("ℹ️ 在 Windows 上跳过添加 SIGTERM 信号监听器。");
     }
-    // --- 修改结束 ---
   } catch (e) {
-    // 处理添加 SIGINT 监听器时可能发生的错误（虽然不太可能）
     console.warn(
       "⚠️ 无法添加 SIGINT 信号监听器 (可能权限不足或环境不支持):",
       e,

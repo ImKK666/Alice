@@ -1,4 +1,4 @@
-// src/cli_interface.ts
+// src/cli_interface.ts (修改后 - 使用 social_cognition)
 /**
  * CLI (Command Line Interface) 交互模块
  *
@@ -12,13 +12,19 @@ import {
   getTemporalContext,
   updateTemporalContext,
 } from "./time_perception.ts";
-// 导入关系状态模块的函数，用于清除关系状态
-import {
-  getRelationshipState,
-  updateRelationshipState,
-} from "./social_dynamics.ts";
+// --- 修改：导入新的社交认知模块 ---
+import { getSocialCognitionManager } from "./social_cognition.ts"; // 导入新的社交认知管理器
+// import { // 旧的社交动态导入 (注释掉)
+//   getRelationshipState,
+//   updateRelationshipState,
+// } from "./social_dynamics.ts";
+// --- 修改结束 ---
 // 导入身体状态模块的函数，用于清除身体状态
 import { getBodyState, updateBodyState } from "./virtual_embodiment.ts";
+
+// --- 新增：获取社交认知管理器实例 ---
+const socialCognition = getSocialCognitionManager();
+// --- 新增结束 ---
 
 /**
  * 启动命令行交互界面
@@ -75,14 +81,13 @@ export async function startCli(): Promise<void> {
           case "/user":
             if (arg1) {
               currentUserId = arg1;
-              // 用户切换后，重置上下文ID为一个基于新用户的默认值
               currentRAGContextId = `cli_${currentUserId}_context`;
               console.log(
                 `✅ 用户切换为: ${currentUserId}, 上下文重置为: ${currentRAGContextId}`,
               );
             } else console.log("用法: /user <新用户ID>");
             break;
-          case "/context": // 手动覆盖当前RAG上下文
+          case "/context":
             if (arg1) {
               currentRAGContextId = arg1;
               console.log(`✅ RAG 上下文手动设置为: ${currentRAGContextId}`);
@@ -120,7 +125,7 @@ export async function startCli(): Promise<void> {
             console.log(`✅ STM 已清除 (${currentRAGContextId})。`);
             break;
           }
-          case "/clearstate": { // 清除所有状态
+          case "/clearstate": {
             if (!kv) {
               console.log("⚠️ KV 未初始化，无法清除状态。");
               break;
@@ -128,23 +133,22 @@ export async function startCli(): Promise<void> {
             console.log(
               `⚠️ 准备清除用户 ${currentUserId} 在上下文 ${currentRAGContextId} 的所有状态...`,
             );
-            // 清除 STM
             await kv.delete(["stm", currentRAGContextId]);
             console.log("  - STM 已清除。");
-            // 清除时间上下文
             await kv.delete([
               "temporal_context",
               currentUserId,
               currentRAGContextId,
             ]);
             console.log("  - 时间上下文已清除。");
-            // 清除身体状态
             await kv.delete(["body_state", currentUserId, currentRAGContextId]);
             console.log("  - 虚拟身体状态已清除。");
-            // 清除关系状态
-            await kv.delete(["relationship_state", currentUserId]); // 关系状态通常只与用户关联
+            // --- 修改：使用新的社交认知模块的键前缀来清除关系状态 ---
+            // 注意：关系状态现在是 Alice <-> entityId，所以清除时需要用 ('alice', currentUserId)
+            const aliceId = "alice"; // 假设 Alice 的固定 ID 是 'alice'
+            await kv.delete(["social_relationship", aliceId, currentUserId]);
             console.log(`  - 与用户 ${currentUserId} 的关系状态已重置。`);
-            // 清除上次漫游时间
+            // --- 修改结束 ---
             await kv.delete([
               "last_wandering_time",
               currentUserId,
@@ -186,8 +190,12 @@ export async function startCli(): Promise<void> {
                 );
                 break;
               case "relationship":
-                // 关系状态通常只与用户ID关联
-                stateData = await getRelationshipState(currentUserId, kv);
+                // --- 修改：使用新的社交认知模块获取关系状态 ---
+                // getRelationshipState 现在需要传入 entityId (即对方用户 ID)
+                stateData = await socialCognition.getRelationshipState(
+                  currentUserId,
+                );
+                // --- 修改结束 ---
                 break;
               default:
                 console.log(
@@ -202,7 +210,7 @@ export async function startCli(): Promise<void> {
             }
             break;
           }
-          case "/exit": // 这个 break 会跳出 switch, 外层 while 条件处理退出
+          case "/exit":
             break;
           default:
             console.log("⚠️ 未知命令。");
@@ -222,15 +230,13 @@ export async function startCli(): Promise<void> {
     // 创建消息对象
     const message: ChatMessageInput = {
       userId: currentUserId,
-      // contextId 使用的是 RAG 上下文 ID
-      contextId: currentRAGContextId,
+      contextId: currentRAGContextId, // 使用 RAG 上下文 ID
       text: trimmedInput,
       timestamp: Date.now(),
     };
 
     try {
       // 调用核心处理函数，传入当前 RAG 上下文 ID
-      // handleIncomingMessage 会处理所有逻辑，包括更新状态和打印回复
       const result = await handleIncomingMessage(
         message,
         currentRAGContextId, // 传递当前的 RAG 上下文状态
@@ -244,7 +250,6 @@ export async function startCli(): Promise<void> {
       console.log(`\n🤖 Alice: ${result.responseText}\n`);
     } catch (error) {
       console.error("❌ 处理消息时发生顶层错误:", error);
-      // 可以在这里给用户一个错误提示
       console.log("\n🤖 Alice: [抱歉，处理时遇到错误...]\n");
     }
     console.log("----------------------------------------------");
