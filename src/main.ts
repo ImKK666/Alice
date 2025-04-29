@@ -1582,6 +1582,7 @@ export async function handleIncomingMessage(
         { text: message.text, emotional_state: messageSentiment },
         false,
         kv,
+        loadedStopwordsSet,
       )
         .then((state) => {
           updatedBodyState = state;

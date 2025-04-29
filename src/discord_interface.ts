@@ -15,6 +15,7 @@ import {
 import { config } from "./config.ts";
 import type { ChatMessageInput } from "./memory_processor.ts";
 import { handleIncomingMessage } from "./main.ts"; // 确保 main 导出了 handleIncomingMessage
+import { cut as jiebaCut } from "npm:jieba-wasm@latest";
 
 // 状态管理: { channelId (string): lastRAGContextId (string) }
 // discord.js v14 的 ID 通常是字符串
@@ -50,23 +51,49 @@ function splitMessage(text: string, maxLength = 1990): string[] { // 稍微减�
   return messages.length > 0 ? messages : [""]; // 确保不返回空数组
 }
 
-// --- 新增：消息重要性打分函数 ---
+/**
+ * 使用 jieba-wasm 进行分词
+ * @param text 要分词的文本
+ * @returns 分词后的单词数组，如果出错则回退
+ */
+function segmentChineseTextWasm(text: string): string[] {
+  try {
+    // 直接调用导入的 cut 函数，无需检查初始化状态
+    // 第二个参数 true/false 控制是否使用 HMM 模型处理未登录词，可选
+    return jiebaCut(text, true);
+  } catch (error) {
+    console.error("[Discord][分词] 使用 jieba-wasm 分词时出错:", error);
+    // 出错时回退到简单按空格分割
+    return text.split(/\s+/);
+  }
+}
+
 /**
  * 计算消息的重要性分数 (0.0 - 1.0)，用于决定是否处理非强制处理的消息。
+ * (修改版：增加详细调试输出)
  * @param message Discord 消息对象
  * @returns 一个 Promise，解析为消息的重要性分数
  */
 async function calculateMessageImportanceScore(
   message: Message,
 ): Promise<number> {
-  let score = 0.0;
   const text = message.content;
-  const lowerCaseText = text.toLowerCase();
+  // --- 基本过滤 ---
+  if (!text || text.trim().length < 5) {
+    console.log(`[调试][权重] 消息过短 (< 5 chars)，最终分数: 0.0`);
+    return 0.0;
+  }
+
+  // --- 初始化 ---
+  let score = 0.0; // 初始分数
+  let debugLog = ""; // 用于旧格式日志
+  const stepLogs: string[] = []; // 用于记录每步计算
+
+  stepLogs.push(`[调试][权重] 初始分数: ${score.toFixed(3)}`);
+
+  const lowerCaseText = text.toLowerCase(); // 提及判断可能仍需小写原文
   const authorId = message.author.id;
   const botId = message.client.user?.id;
-
-  // --- 基本过滤 ---
-  if (!text || text.trim().length < 5) return 0.0;
 
   // --- 配置读取 ---
   const ownerId = config.discordOwnerId;
@@ -75,70 +102,165 @@ async function calculateMessageImportanceScore(
   const importantKeywords = config.importantKeywords || [];
   const actionVerbs = config.actionVerbs || [];
 
-  // --- 权重计算 ---
-  let debugLog = "";
+  // --- 权重计算步骤 ---
 
-  // 1. 提及特定名称 (高权重)
+  // 1. 提及或回复机器人/主人 (更高权重)
   let mentionedBot = botNames.some((name) =>
     lowerCaseText.includes(name.toLowerCase())
   );
   let mentionedOwner = (ownerId && text.includes(ownerId)) ||
     ownerNicknames.some((nick) => text.includes(nick));
-  if (mentionedBot) score += 0.5;
-  if (mentionedOwner) score += 0.6; // 提及主人权重更高
-  debugLog += `mention(${mentionedBot}/${mentionedOwner}):${
-    (mentionedBot ? 0.5 : 0) + (mentionedOwner ? 0.6 : 0)
-  } | `;
+  let isMentionedBot = false; // 标记是否是直接 @ 提及
 
-  // 2. 包含重要关键词 (中/高权重)
-  let keywordCount = importantKeywords.filter((kw) => text.includes(kw)).length;
-  let keywordScore = Math.min(0.4, keywordCount * 0.1); // 每个关键词0.1，上限0.4
+  if (botId && message.mentions.users.has(botId)) {
+    mentionedBot = true;
+    isMentionedBot = true; // 标记直接提及
+  }
+
+  let mentionScore = 0;
+  if (isMentionedBot) {
+    mentionScore = 0.8;
+    stepLogs.push(`  + 直接提及机器人: +${mentionScore.toFixed(3)}`);
+  } else if (mentionedBot) {
+    mentionScore = 0.5;
+    stepLogs.push(`  + 名字提及机器人: +${mentionScore.toFixed(3)}`);
+  }
+  if (mentionedOwner) {
+    // 如果同时提及机器人和主人，取最高分（避免叠加过多）
+    const ownerScore = 0.9;
+    if (ownerScore > mentionScore) {
+      mentionScore = ownerScore; // 更新为主人提及分
+      stepLogs.push(`  * (覆盖)提及主人: +${mentionScore.toFixed(3)}`);
+    } else {
+      stepLogs.push(
+        `  + 提及主人 (已覆盖机器人提及分): +${
+          ownerScore.toFixed(3)
+        }, 但已有更高分`,
+      );
+    }
+  }
+  score += mentionScore;
+  stepLogs.push(`  => 提及后分数: ${score.toFixed(3)}`);
+  debugLog += `提及:${mentionScore.toFixed(2)} | `; // 保留旧日志格式部分
+
+  // --- 分词处理 (增加日志) ---
+  stepLogs.push(`[调试][分词] 准备分词...`);
+  console.log(`[调试][分词] 输入文本: "${text}"`);
+  const segmentedWords = segmentChineseTextWasm(text); // 调用分词函数
+  console.log(`[调试][分词] 输出词语: [${segmentedWords.join(", ")}]`);
+  const wordSet = new Set(segmentedWords); // 转为 Set 方便查找
+  stepLogs.push(`  - 分词完成，共 ${wordSet.size} 个独立词语。`);
+
+  // 2. 包含重要关键词 (使用分词结果)
+  const matchedKeywords = importantKeywords.filter((kw) => wordSet.has(kw));
+  let keywordCount = matchedKeywords.length;
+  let keywordScore = Math.min(0.5, keywordCount * 0.15); // 调整权重和上限
   score += keywordScore;
-  debugLog += `keyword(${keywordCount}):${keywordScore.toFixed(2)} | `;
+  stepLogs.push(
+    `  + 关键词 (${keywordCount})${
+      matchedKeywords.length > 0 ? ` [${matchedKeywords.join(",")}]` : ""
+    }: +${keywordScore.toFixed(3)}`,
+  );
+  stepLogs.push(`  => 关键词后分数: ${score.toFixed(3)}`);
+  debugLog += `关键词(${keywordCount}):${keywordScore.toFixed(2)} | `;
 
-  // 3. 包含动作意图词 (中等权重)
-  let actionVerbCount =
-    actionVerbs.filter((verb) => text.includes(verb)).length;
-  let actionScore = Math.min(0.3, actionVerbCount * 0.08); // 每个动词0.08，上限0.3
+  // 3. 包含动作意图词 (使用分词结果)
+  const matchedActionVerbs = actionVerbs.filter((verb) => wordSet.has(verb));
+  let actionVerbCount = matchedActionVerbs.length;
+  let actionScore = Math.min(0.4, actionVerbCount * 0.1); // 调整权重和上限
   score += actionScore;
-  debugLog += `action(${actionVerbCount}):${actionScore.toFixed(2)} | `;
+  stepLogs.push(
+    `  + 动作词 (${actionVerbCount})${
+      matchedActionVerbs.length > 0 ? ` [${matchedActionVerbs.join(",")}]` : ""
+    }: +${actionScore.toFixed(3)}`,
+  );
+  stepLogs.push(`  => 动作词后分数: ${score.toFixed(3)}`);
+  debugLog += `动作词(${actionVerbCount}):${actionScore.toFixed(2)} | `;
 
-  // 4. 是否为回复消息 (中等权重)
+  // 4. 是否为回复消息 (回复机器人权重提高)
   let replyScore = 0;
   if (message.reference?.messageId) {
-    replyScore += 0.1; // 基础回复分
+    let repliedToWho = "未知用户";
+    let baseReplyScore = 0.1; // 基础回复分
+    replyScore += baseReplyScore;
+    stepLogs.push(`  + 基础回复: +${baseReplyScore.toFixed(3)}`);
     try {
-      // 尝试获取被回复消息，增加延迟，但可以提高准确性
       const repliedToMessage = await message.channel.messages.fetch(
         message.reference.messageId,
       );
-      if (repliedToMessage.author.id === botId) replyScore += 0.25; // 回复机器人
-      if (ownerId && repliedToMessage.author.id === ownerId) replyScore += 0.3; // 回复主人
-    } catch { /* 获取失败忽略 */ }
-    score += replyScore;
-    debugLog += `reply:${replyScore.toFixed(2)} | `;
+      repliedToWho = repliedToMessage.author.tag;
+      if (botId && repliedToMessage.author.id === botId) {
+        let botReplyBonus = 0.5;
+        replyScore += botReplyBonus; // 大幅提高回复机器人的权重
+        stepLogs.push(`  + 回复机器人: +${botReplyBonus.toFixed(3)}`);
+      } else if (ownerId && repliedToMessage.author.id === ownerId) {
+        let ownerReplyBonus = 0.3;
+        replyScore += ownerReplyBonus; // 回复主人权重
+        stepLogs.push(`  + 回复主人: +${ownerReplyBonus.toFixed(3)}`);
+      }
+    } catch (fetchError) {
+      console.warn(`[Discord][权重计算] 获取被回复消息失败: ${fetchError}`);
+      repliedToWho = "获取失败";
+    }
+    stepLogs.push(`  - 回复目标: ${repliedToWho}`);
   }
+  score += replyScore; // 更新分数
+  stepLogs.push(`  => 回复后分数: ${score.toFixed(3)}`);
+  debugLog += `回复:${replyScore.toFixed(2)} | `;
 
-  // 5. 消息长度加权 (非线性，长消息加分多)
-  const lengthFactor = Math.log10(Math.max(10, text.length)) - 1; // log10(10)=1 -> 0分; log10(100)=2 -> 1分...
-  let lengthScore = Math.min(0.2, Math.max(0, lengthFactor * 0.1)); // 长度得分上限0.2
+  // 5. 是否为提问 (新增维度)
+  const isQuestion = text.includes("?") || text.includes("？") ||
+    /^(how|what|why|when|where|who|请问|如何|怎样|什么|为什么|吗)/i.test(
+      text.trim(),
+    );
+  let questionScore = isQuestion ? 0.4 : 0; // 提问给予较高权重
+  score += questionScore;
+  stepLogs.push(`  + 提问 (${isQuestion}): +${questionScore.toFixed(3)}`);
+  stepLogs.push(`  => 提问后分数: ${score.toFixed(3)}`);
+  debugLog += `提问:${questionScore.toFixed(2)} | `;
+
+  // 6. 消息长度加权 (分段函数)
+  const length = text.length;
+  let lengthScore = 0;
+  if (length > 150) lengthScore = 0.2;
+  else if (length > 80) lengthScore = 0.15;
+  else if (length > 40) lengthScore = 0.1;
+  else if (length > 15) lengthScore = 0.05;
   score += lengthScore;
-  debugLog += `len(${text.length}):${lengthScore.toFixed(2)} | `;
+  stepLogs.push(`  + 长度 (${length}): +${lengthScore.toFixed(3)}`);
+  stepLogs.push(`  => 长度后分数: ${score.toFixed(3)}`);
+  debugLog += `长度(${length}):${lengthScore.toFixed(2)} | `;
 
-  // 6. 包含代码块
-  if (text.includes("```")) score += 0.1;
-  debugLog += `code:${text.includes("```") ? 0.1 : 0} | `;
+  // 7. 包含代码块
+  const hasCodeBlock = text.includes("```");
+  let codeScore = hasCodeBlock ? 0.15 : 0;
+  score += codeScore;
+  stepLogs.push(`  + 代码块 (${hasCodeBlock}): +${codeScore.toFixed(3)}`);
+  stepLogs.push(`  => 代码块后分数: ${score.toFixed(3)}`);
+  debugLog += `代码块:${codeScore.toFixed(2)} | `;
 
-  // 7. 包含链接
-  if (/https?:\/\/[^\s]+/.test(text)) score += 0.05;
-  debugLog += `link:${/https?:\/\/[^\s]+/.test(text) ? 0.05 : 0}`;
+  // 8. 包含链接
+  const hasLink = /https?:\/\/[^\s]+/.test(text);
+  let linkScore = hasLink ? 0.1 : 0;
+  score += linkScore;
+  stepLogs.push(`  + 链接 (${hasLink}): +${linkScore.toFixed(3)}`);
+  stepLogs.push(`  => 链接后分数: ${score.toFixed(3)}`);
+  debugLog += `链接:${linkScore.toFixed(2)}`;
 
   // --- 最终分数限制 ---
-  const finalScore = Math.max(0, Math.min(1.0, score)); // 确保分数在 0 到 1 之间
+  const finalScore = Math.max(0, Math.min(1.0, score)); // 分数限制在 0-1
+
+  // --- 打印详细步骤日志 ---
+  console.log("[调试][权重] 计算过程:");
+  stepLogs.forEach((log) => console.log(log));
+  console.log(`[调试][权重] 最终分数 (限制在0-1): ${finalScore.toFixed(3)}`);
+
+  // 打印旧格式日志，以便你之前的日志对比
   console.log(
-    `   [Score] Details: ${debugLog} => Final Score: ${finalScore.toFixed(3)}`,
+    `   [分数详情] ${debugLog} => 最终分数: ${finalScore.toFixed(3)}`,
   );
-  return finalScore;
+
+  return finalScore; // 返回最终分数
 }
 
 /**
@@ -155,7 +277,7 @@ export async function startDiscord(): Promise<void> {
       "⚠️ 警告：DISCORD_OWNER_ID 未设置，部分功能（如主人识别）可能受影响。",
     );
   }
-  const processingThreshold = config.discordProcessingThreshold ?? 0.6; // 获取阈值
+  const processingThreshold = config.discordProcessingThreshold ?? 0.6; // 获取阈值或使用默认值
 
   console.log("▶️ 正在初始化 Discord Bot (discord.js v14)...");
 
@@ -203,7 +325,7 @@ export async function startDiscord(): Promise<void> {
 
     // --- 2. 决定是否处理 ---
     let shouldProcess = false;
-    let processingReason = "默认忽略";
+    let processingReason = "默认忽略"; // 处理原因（用于日志）
 
     if (isDM) {
       shouldProcess = true;
@@ -211,18 +333,19 @@ export async function startDiscord(): Promise<void> {
     } else if (
       config.discordAlwaysReplyToOwner && config.discordOwnerId &&
       authorId === config.discordOwnerId
-    ) { // <--- 新增：检查强制回复主人的开关
+    ) {
       shouldProcess = true;
-      processingReason = "主人消息 (强制回复)"; // 理由可以明确一点
+      processingReason = "主人消息 (强制回复)";
     } else if (mentionsBot) {
       shouldProcess = true;
       processingReason = "提及机器人";
     } else {
       // 频道消息，需要打分判断
       console.log(
-        `[Discord] 频道 ${channelId} 消息来自普通用户，开始计算权重...`,
+        `[Discord] 频道 ${channelId} 消息来自普通用户，开始计算权重...`, // 中文日志
       );
-      const messageScore = await calculateMessageImportanceScore(message);
+      // 调用 calculateMessageImportanceScore (它内部会用新分词逻辑)
+      const messageScore = await calculateMessageImportanceScore(message); // 使用 await 调用
 
       if (messageScore >= processingThreshold) {
         shouldProcess = true;
@@ -233,11 +356,10 @@ export async function startDiscord(): Promise<void> {
         processingReason = `消息分数 (${
           messageScore.toFixed(3)
         }) < 阈值 (${processingThreshold})`;
-        // 分数不够，直接返回，不处理
         console.log(
-          `[Discord] 忽略消息 (原因: ${processingReason}): 用户 ${authorId} 在频道 ${channelId}`,
+          `[Discord] 忽略消息 (原因: ${processingReason}): 用户 ${authorId} 在频道 ${channelId}`, // 中文日志
         );
-        return; // 移除了原先的主人检查，因为上面已经用开关处理了
+        return; // 分数不够，直接返回
       }
     }
 
@@ -248,7 +370,7 @@ export async function startDiscord(): Promise<void> {
           isDM
             ? "私聊"
             : `频道 ${channelId}(${(message.channel as TextChannel)?.name})`
-        }`,
+        }`, // 中文日志
       );
       const processStartTime = Date.now();
       try {
@@ -266,7 +388,7 @@ export async function startDiscord(): Promise<void> {
           sourceContextId; // 获取当前RAG上下文，或使用来源ID作为默认值
 
         console.log(
-          `[调试 Discord] 来源 ${sourceContextId}: 调用 RAG 前的上下文 ID: ${currentRAGContextId}`,
+          `[调试 Discord] 来源 ${sourceContextId}: 调用 RAG 前的上下文 ID: ${currentRAGContextId}`, // 中文调试
         );
 
         // 构造输入
@@ -279,7 +401,7 @@ export async function startDiscord(): Promise<void> {
         };
 
         console.log(
-          `[Discord][${sourceContextId}]->[RAG] 开始处理 (当前 RAG 上下文: ${currentRAGContextId})`,
+          `[Discord][${sourceContextId}]->[RAG] 开始处理 (当前 RAG 上下文: ${currentRAGContextId})`, // 中文日志
         );
 
         // 调用核心 RAG 逻辑
@@ -292,7 +414,7 @@ export async function startDiscord(): Promise<void> {
         // 更新 RAG 上下文映射
         if (result.newContextId !== currentRAGContextId) {
           console.log(
-            `[调试 Discord] 来源 ${sourceContextId}: RAG 上下文已更新为: ${result.newContextId}`,
+            `[调试 Discord] 来源 ${sourceContextId}: RAG 上下文已更新为: ${result.newContextId}`, // 中文调试
           );
           channelContextMap.set(sourceContextId, result.newContextId);
         } else {
@@ -304,10 +426,6 @@ export async function startDiscord(): Promise<void> {
 
         // 格式化回复
         let finalResponse = result.responseText;
-        // 不再自动添加主人称呼，因为Prompt中已经处理了
-        // if (config.discordOwnerId && authorId === config.discordOwnerId) {
-        //   finalResponse = `${config.discordOwnerGreeting}，${finalResponse}`;
-        // }
 
         // --- 发送消息 ---
         if (finalResponse && finalResponse.trim().length > 0) {
@@ -325,13 +443,13 @@ export async function startDiscord(): Promise<void> {
                 });
               } catch (replyError) {
                 console.warn(
-                  `[Discord][${sourceContextId}] 回复消息失败，尝试直接发送: ${replyError}`,
+                  `[Discord][${sourceContextId}] 回复消息失败，尝试直接发送: ${replyError}`, // 中文日志
                 );
                 try {
                   await message.channel.send({ content: part });
                 } catch (sendError) {
                   console.error(
-                    `[Discord][${sourceContextId}] 直接发送也失败了:`,
+                    `[Discord][${sourceContextId}] 直接发送也失败了:`, // 中文日志
                     sendError,
                   );
                 }
@@ -343,7 +461,7 @@ export async function startDiscord(): Promise<void> {
                 await message.channel.send({ content: part });
               } catch (sendError) {
                 console.error(
-                  `[Discord][${sourceContextId}] 发送后续消息部分失败:`,
+                  `[Discord][${sourceContextId}] 发送后续消息部分失败:`, // 中文日志
                   sendError,
                 );
                 break; // 如果发送失败，停止发送后续部分
@@ -354,7 +472,7 @@ export async function startDiscord(): Promise<void> {
           }
         } else {
           console.log(
-            `[Discord][${sourceContextId}] RAG 返回了空响应，不发送消息。`,
+            `[Discord][${sourceContextId}] RAG 返回了空响应，不发送消息。`, // 中文日志
           );
         }
 
@@ -362,14 +480,14 @@ export async function startDiscord(): Promise<void> {
         console.log(
           `[Discord][${sourceContextId}]<-[RAG] 消息处理完成。(耗时: ${
             (processEndTime - processStartTime) / 1000
-          } 秒)`,
+          } 秒)`, // 中文日志
         );
       } catch (error) {
         const processEndTime = Date.now();
         console.error(
           `[Discord][${sourceContextId}] 处理消息或回复时出错 (耗时: ${
             (processEndTime - processStartTime) / 1000
-          } 秒):`,
+          } 秒):`, // 中文日志
           error,
         );
         try {
@@ -378,13 +496,12 @@ export async function startDiscord(): Promise<void> {
           });
         } catch (sendError) {
           console.error(
-            `[Discord][${sourceContextId}] 发送错误提示消息也失败了:`,
+            `[Discord][${sourceContextId}] 发送错误提示消息也失败了:`, // 中文日志
             sendError,
           );
         }
       }
     }
-    // 如果 shouldProcess 为 false，上面已经 return 了，这里无需处理
   });
 
   // 处理潜在的错误和警告 (保持不变)
@@ -394,10 +511,10 @@ export async function startDiscord(): Promise<void> {
 
   // --- 登录 Bot ---
   try {
-    console.log("▶️ 正在登录 Discord Bot...");
+    console.log("▶️ 正在登录 Discord Bot..."); // 中文日志
     await client.login(config.discordBotToken);
   } catch (error) {
-    console.error("❌ 登录 Discord Bot 失败:", error);
+    console.error("❌ 登录 Discord Bot 失败:", error); // 中文日志
     Deno.exit(1);
   }
 }
