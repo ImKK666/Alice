@@ -24,7 +24,7 @@ export const embeddings = new OpenAIEmbeddings({
   apiKey: config.siliconflowApiKey, // 使用SiliconFlow API密钥
 
   // 性能优化参数
-  batchSize: 48, // 批处理大小 - 每次请求处理的文本数量
+  batchSize: 512, // 增加批处理大小以提高效率 (原为48，可根据API限制调整)
   stripNewLines: true, // 移除换行符 - 改善嵌入质量
   dimensions: config.embeddingDimension, // 指定嵌入向量维度
 
@@ -36,7 +36,10 @@ export const embeddings = new OpenAIEmbeddings({
   },
 
   // 错误处理
-  maxRetries: 2, // 失败时自动重试的次数
+  maxRetries: 3, // 稍微增加重试次数 (原为2)
+  timeout: 60000, // 设置超时时间为60秒
+  // 可以考虑添加其他 OpenAIEmbeddings 支持的参数，例如指定请求头等
+  // headers: { "Custom-Header": "Value" }
 });
 
 /**
@@ -45,41 +48,53 @@ export const embeddings = new OpenAIEmbeddings({
  * 在初始化嵌入客户端后输出日志，便于调试和确认
  */
 console.log(
-  `🔤 嵌入模型客户端初始化完成。模型: ${config.embeddingModel}, 接口地址: ${config.siliconflowBaseUrl}${config.embeddingsPath}`,
+  `🔤 嵌入模型客户端初始化完成。模型: ${config.embeddingModel}, 维度: ${config.embeddingDimension}, 接口: ${config.siliconflowBaseUrl}`,
 );
 
 /**
  * 检查嵌入维度的工具函数
- *
- * 实现逻辑：
- * 1. 生成一个测试嵌入向量
- * 2. 返回向量的维度
- * 3. 如果出错，返回配置中的默认维度
- *
- * 注意：这个函数当前未被使用，但保留作为工具函数
+ * (通常在开发或测试时使用，应用启动时不必须调用)
+ * @returns Promise<number> 返回实际维度或配置维度
  */
 export async function _getEmbeddingDimension(): Promise<number> {
   try {
     // 生成测试嵌入向量
-    const testVector = await embeddings.embedQuery("test");
+    console.log("   -> [Embeddings] 正在生成测试向量以检查维度...");
+    const testVector = await embeddings.embedQuery(
+      "test query for dimension check",
+    );
+    console.log(`   -> [Embeddings] 测试向量维度: ${testVector.length}`);
     return testVector.length; // 返回向量维度
   } catch (error) {
-    console.error("❌ 无法获取嵌入维度:", error);
+    console.error("❌ 无法自动获取嵌入维度:", error);
     // 如果无法自动获取，返回配置中的默认值
+    console.warn(
+      `   -> [Embeddings] 无法自动获取维度，将使用配置值: ${config.embeddingDimension}`,
+    );
     return config.embeddingDimension;
   }
 }
 
 /**
  * 维度检查代码示例
- *
- * 下面的代码可以在应用启动时运行，以验证实际嵌入维度与配置是否匹配
- * 当前已注释，可在需要时取消注释使用
+ * (可以在应用启动时调用一次进行验证)
  */
-// async function verifyEmbeddingDimension() {
-//   const actualDimension = await _getEmbeddingDimension();
-//   if (actualDimension !== config.embeddingDimension) {
-//     console.warn(`⚠️ 警告：实际嵌入维度 ${actualDimension} 与配置 ${config.embeddingDimension} 不符。请更新 config.ts。`);
-//     // 可以选择更新 config.embeddingDimension 或抛出错误
-//   }
-// }
+/*
+async function verifyEmbeddingDimensionOnStartup() {
+  if (!config.siliconflowApiKey) {
+     console.warn("   -> [Embeddings] SiliconFlow API Key 未配置，跳过维度验证。");
+     return;
+  }
+  console.log("   -> [Embeddings] 正在验证嵌入维度...");
+  const actualDimension = await _getEmbeddingDimension();
+  if (actualDimension !== config.embeddingDimension) {
+    console.warn(`⚠️ 警告：实际嵌入维度 (${actualDimension}) 与配置 (${config.embeddingDimension}) 不符。请检查模型名称或更新 config.ts 中的 EMBEDDING_DIMENSION。`);
+    // 在这里可以决定是继续运行还是退出
+    // Deno.exit(1); // 例如，维度不匹配时强制退出
+  } else {
+      console.log("   -> [Embeddings] ✅ 嵌入维度与配置匹配。");
+  }
+}
+// 在 main.ts 的初始化阶段调用:
+// await verifyEmbeddingDimensionOnStartup();
+*/

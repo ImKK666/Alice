@@ -21,8 +21,10 @@ export const llm = new ChatOpenAI({
   modelName: config.llmModel, // 指定要使用的模型，从配置读取
 
   // 生成参数
-  temperature: 0.7, // 温度 - 控制生成文本的随机性，越高越创造
-  maxTokens: 65536, // 最大标记数 - 限制生成文本的长度
+  temperature: 0.75, // 温度调整 - 略微提高以增加自然度 (原为0.7)
+  maxTokens: 4096, // 限制最大生成长度 (原为65536，可能过高)
+  // 注意: Deepseek模型的实际上下文长度限制可能不同
+  // 需要根据所选模型的文档调整
 
   // 身份验证
   apiKey: config.deepseekApiKey, // 使用DeepSeek API密钥
@@ -33,7 +35,8 @@ export const llm = new ChatOpenAI({
   },
 
   // 错误处理
-  maxRetries: 2, // 失败时自动重试的次数
+  maxRetries: 3, // 稍微增加重试次数
+  timeout: 120000, // 设置超时时间为120秒 (2分钟)，防止请求卡死
   // 高级功能（当前未启用）
   // streaming: true, // 流式响应 - 如果需要实时获取生成结果，可以开启
 });
@@ -44,5 +47,5 @@ export const llm = new ChatOpenAI({
  * 在初始化 LLM 客户端后输出日志，便于调试和确认
  */
 console.log(
-  `🧠 大语言模型客户端初始化完成。模型: ${config.llmModel}, API端点: ${config.deepseekBaseUrl}${config.llmPath}`,
+  `🧠 大语言模型客户端初始化完成。模型: ${config.llmModel}, API端点: ${config.deepseekBaseUrl}`,
 );

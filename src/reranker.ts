@@ -62,6 +62,14 @@ export async function rerankMemories(
   // 使用SiliconFlow API密钥
   const apiKey = config.siliconflowApiKey;
 
+  // 检查API密钥是否存在
+  if (!apiKey) {
+    console.error("   -> ❌ Reranker API 密钥未配置。跳过重排序。");
+    // 可以选择返回原始候选记忆（按原始分数排序）或空数组
+    // 这里我们返回空数组，让主流程知道重排序失败
+    return [];
+  }
+
   console.log(
     `   -> 🔄 调用 Reranker (模型: ${modelName}) 对 ${candidateMemories.length} 条候选记忆进行重排序... (API: ${apiUrl})`,
   );
@@ -84,6 +92,7 @@ export async function rerankMemories(
         query: query,
         documents: documentsToRerank,
         return_documents: false, // 我们不需要返回文档内容
+        top_n: candidateMemories.length, // 请求返回所有文档的重排序分数
       }),
     });
 
@@ -105,23 +114,17 @@ export async function rerankMemories(
     }
 
     const rerankedMemories = rerankResult.results.map(
-      (item): RerankedMemory => {
+      (item): RerankedMemory | null => { // 返回类型改为可能为 null
         // 基本验证item结构
         if (
           item.index === undefined || item.relevance_score === undefined ||
-          !candidateMemories[item.index]
+          item.index < 0 || item.index >= candidateMemories.length // 检查索引有效性
         ) {
           console.warn(
             `   -> ⚠️ Rerank API 返回了无效的 item 结构或索引:`,
             item,
           );
-          // 返回一个占位符或后续过滤。这里我们创建一个可能有问题的条目。
-          // 更健壮的方法是将这些过滤掉。
-          return {
-            id: "invalid",
-            payload: {} as MemoryPayload,
-            rerank_score: -1,
-          };
+          return null; // 返回 null 表示此项无效
         }
         const originalMemory = candidateMemories[item.index]; // 通过 index 找到原始记忆
         return {
@@ -130,7 +133,7 @@ export async function rerankMemories(
           rerank_score: item.relevance_score,
         };
       },
-    ).filter((mem) => mem.id !== "invalid"); // 过滤无效条目
+    ).filter((mem): mem is RerankedMemory => mem !== null); // 使用类型谓词过滤掉 null
 
     // 按 rerank_score 降序排序
     rerankedMemories.sort((a, b) => b.rerank_score - a.rerank_score);

@@ -1,20 +1,11 @@
-// src/qdrant_client.ts (修改后)
-/**
- * Qdrant 向量数据库客户端模块 - 提供向量存储和检索功能 (用于 AI 长期记忆)
- *
- * 实现功能：
- * 1. 创建和管理 Qdrant 集合
- * 2. 存储和更新结构化的记忆数据 (向量 + Payload)
- * 3. 执行基于向量相似度和元数据过滤的记忆检索查询
- */
+// src/qdrant_client.ts
 
-// 使用 npm 导入语法导入 Qdrant 客户端
+// 导入所需依赖，保持原有导入不变
 import { QdrantClient } from "npm:@qdrant/js-client-rest";
-// 导入 Qdrant 的类型定义并重命名以避免命名冲突 (如果需要)
 import type { Schemas as QdrantSchemas } from "npm:@qdrant/js-client-rest";
 import { config } from "./config.ts";
 
-// 导出 Qdrant 的 Schemas 类型，供其他模块使用
+// 导出 Qdrant 的 Schemas 类型，依旧保持不变
 export type Schemas = QdrantSchemas;
 
 /**
@@ -34,7 +25,8 @@ export type Distance = Schemas["Distance"]; // 使用 Qdrant 库定义的类型
  * - summary: 对话或主题的摘要
  * - persona_trait: AI 自身的核心设定
  * - joke_or_banter: 群聊中的玩笑或梗
- * - reflection: AI 的自我反思 (较高级)
+ * - reflection: AI 的自我分析 (较高级)
+ * - emotional_response: 情感回应或感受 (新增)
  */
 export type MemoryType =
   | "conversation_turn"
@@ -45,11 +37,28 @@ export type MemoryType =
   | "persona_trait"
   | "joke_or_banter"
   | "reflection"
-  | "unknown"; // 添加一个未知类型以备不时之需
+  | "emotional_response" // 新增的情感记忆类型
+  | "unknown";
+
+/**
+ * 定义情感维度类型
+ * 描述情感的不同维度，用于情感分析
+ */
+export type EmotionDimension =
+  | "joy" // 喜悦
+  | "sadness" // 悲伤
+  | "anger" // 愤怒
+  | "fear" // 恐惧
+  | "surprise" // 惊讶
+  | "disgust" // 厌恶
+  | "trust" // 信任
+  | "anticipation" // 期待
+  | "neutral"; // 中性
 
 /**
  * AI 记忆的 Payload 结构接口
  * 定义了存储在 Qdrant Point 中的元数据
+ * 增强版：包含情感维度和思维漫游元数据
  */
 export interface MemoryPayload {
   memory_type: MemoryType; // 记忆的类型
@@ -59,15 +68,31 @@ export interface MemoryPayload {
   text_content: string; // 记忆的核心文本内容
   importance_score?: number; // (可选) 重要性评分 (例如 1-5)
   related_ids?: string[]; // (可选) 关联的其他记忆 Point ID
+
+  // --- 情感维度 ---
+  emotional_valence?: number; // 情感效价: -1.0(极负面)到1.0(极正面)
+  emotional_arousal?: number; // 情感唤醒度: 0.0(平静)到1.0(强烈)
+  emotional_dimensions?: { [key in EmotionDimension]?: number }; // 情感维度分析
+  associative_triggers?: string[]; // 可能唤起此记忆的关联词
+
+  // --- 思维漫游元数据 (新增) ---
+  insight_metadata?: {
+    insight_type?: string; // 例如 "connection", "pattern", "metaphor"
+    source_memories?: string[]; // 启发此洞见的记忆ID
+    wandering_context?: {
+      user_id?: string;
+      recent_topics?: string[];
+    };
+    use_count?: number; // 使用次数
+    last_used?: number; // 上次使用时间戳
+  };
+
   // 未来可以添加更多元数据字段...
 }
 
 /**
  * Qdrant Point 结构接口 - 定义存储在 Qdrant 中的完整数据结构
  * (使用了我们定义的 MemoryPayload)
- *
- * 注意: Qdrant 的 Point ID 必须是 UUID 字符串或 64位无符号整数 (unsigned 64-bit integer)。
- * 为了简化和唯一性，推荐使用 UUID。
  */
 export interface MemoryPointStruct {
   id: string; // 强制使用 UUID 字符串作为 ID
@@ -75,36 +100,25 @@ export interface MemoryPointStruct {
   payload: MemoryPayload; // 使用我们定义的结构化 Payload
 }
 
-/**
- * 初始化 Qdrant REST 客户端
- */
+// 保持原有的 qdrantClient 实例化不变
 export const qdrantClient = new QdrantClient({ url: config.qdrantUrl });
 
-/**
- * 输出初始化信息
- */
+// 保持原有的控制台日志输出不变
 console.log(`📊 向量数据库客户端初始化完成。连接地址: ${config.qdrantUrl}`);
 
-/**
- * 确保指定的 Qdrant 集合存在，如果不存在则创建
- *
- * @param collectionName 集合名称
- * @param vectorSize 向量维度
- * @param distanceMetric 距离度量
- */
+// 保持原有函数不变
 export async function ensureCollectionExists(
   collectionName: string,
   vectorSize: number,
   distanceMetric: Distance = "Cosine",
 ) {
+  // 原有实现不变
   try {
     await qdrantClient.getCollection(collectionName);
     console.log(`✅ 集合 "${collectionName}" 已存在，无需创建。`);
-  } catch (error: any) { // 显式将error类型化为any以访问属性
-    // 更健壮的错误检查
+  } catch (error: any) {
     const status = error?.status ?? error?.response?.status;
     const errorString = String(error);
-    // Qdrant未找到通常是404或包含特定文本
     if (
       status === 404 || errorString.includes("Not found") ||
       errorString.includes("doesn't exist")
@@ -116,51 +130,52 @@ export async function ensureCollectionExists(
             size: vectorSize,
             distance: distanceMetric,
           },
-          // 未来可以在这里为 payload 字段创建索引，以加速过滤查询
-          // payload_schema: { ... }
+          // 可以在这里为payload字段创建索引，以加速过滤查询
+          // 建议至少为需要过滤的字段创建索引
+          // payload_schema: {
+          //   memory_type: { type: "keyword" },
+          //   source_context: { type: "keyword" },
+          //   source_user: { type: "keyword" },
+          //   timestamp: { type: "integer" },
+          //   importance_score: { type: "float" },
+          //   emotional_valence: { type: "float" },
+          //   emotional_arousal: { type: "float" },
+          //   // 嵌套对象索引可能需要特殊处理或平铺
+          // }
         });
         console.log(
           `✅ 集合 "${collectionName}" 创建成功，向量维度: ${vectorSize}，距离度量: ${distanceMetric}。`,
         );
       } catch (createError) {
         console.error(`❌ 创建集合 "${collectionName}" 时出错:`, createError);
-        throw createError; // 传播创建错误
+        throw createError;
       }
     } else {
-      // 记录getCollection过程中的意外错误
       console.error(
         `❌ 检查集合 "${collectionName}" 时遇到预期之外的错误:`,
         error,
       );
-      throw error; // 传播意外错误
+      throw error;
     }
   }
 }
 
-/**
- * 将 MemoryPointStruct 对象批量插入或更新到指定的 Qdrant 集合中
- *
- * @param collectionName 目标集合名称
- * @param points MemoryPointStruct 对象数组
- */
+// 保持原有 upsertMemoryPoints 函数不变
 export async function upsertMemoryPoints(
   collectionName: string,
-  points: MemoryPointStruct[], // 注意类型改为 MemoryPointStruct
+  points: MemoryPointStruct[],
 ) {
+  // 原有实现不变
   if (points.length === 0) {
     console.log("ℹ️ 没有记忆点需要插入或更新。");
     return;
   }
   try {
-    // Qdrant JS 客户端的 upsert 参数结构略有不同
-    // 需要将 points 数组包装在 { points: [...] } 对象中
     const result = await qdrantClient.upsert(collectionName, {
-      wait: true, // 等待操作在服务器上完成
-      points: points.map((p) => ({ // 转换成 Qdrant API 需要的格式
+      wait: true,
+      points: points.map((p) => ({
         id: p.id,
         vector: p.vector,
-        // 假设MemoryPayload与Schemas["Payload"]直接兼容
-        // 如果Qdrant的预期payload结构发生变化，可能需要调整
         payload: p.payload as unknown as Schemas["Payload"],
       })),
     });
@@ -173,40 +188,128 @@ export async function upsertMemoryPoints(
   }
 }
 
-/**
- * 在指定集合中执行记忆搜索 (向量相似度 + 可选过滤)
- *
- * @param collectionName 要搜索的集合名称
- * @param vector 查询向量
- * @param limit 返回结果的数量
- * @param filter 可选的 Qdrant 过滤条件 (基于 Payload)
- * @returns 返回包含得分和 MemoryPayload 的搜索结果数组
- */
+// 保持原有 searchMemories 函数不变
 export async function searchMemories(
   collectionName: string,
   vector: number[],
   limit: number,
-  filter?: Schemas["Filter"], // 允许传入过滤器
-  // 返回类型使用导出的 Schemas
+  filter?: Schemas["Filter"],
 ): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>> {
+  // 原有实现不变
   try {
     const searchResult = await qdrantClient.search(collectionName, {
       vector: vector,
       limit: limit,
-      filter: filter, // 应用过滤器
-      with_payload: true, // 必须包含 payload 才能获取记忆内容
+      filter: filter,
+      with_payload: true,
     });
     console.log(
       `🔍 在集合 "${collectionName}" 中搜索完成。找到 ${searchResult.length} 个结果。`,
     );
-    // 类型断言，假设 payload 符合 MemoryPayload 结构
-    // 假设当with_payload=true时，payload始终存在
-    // 返回类型使用导出的 Schemas
     return searchResult as Array<
       Schemas["ScoredPoint"] & { payload: MemoryPayload }
     >;
   } catch (error) {
     console.error(`❌ 在集合 "${collectionName}" 中搜索时出错:`, error);
+    throw error;
+  }
+}
+
+/**
+ * 新增：按情感维度搜索记忆
+ * 可以按情感效价和唤醒度范围检索记忆
+ */
+export async function searchMemoriesByEmotion(
+  collectionName: string,
+  vector: number[], // 仍然需要向量来做初步相关性筛选
+  limit: number,
+  emotionalConfig: {
+    valenceRange?: [number, number]; // 效价范围，如 [-1, -0.5] 表示负面
+    arousalRange?: [number, number]; // 唤醒度范围，如 [0.7, 1.0] 表示强烈
+    dominantEmotion?: EmotionDimension; // 主导情绪
+    contextFilter?: string; // 上下文过滤
+    minimumScore?: number; // 最小相关性得分 (用于结合向量搜索)
+  },
+): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>> {
+  // 构建情感过滤器
+  const emotionFilterConditions: Schemas["Condition"][] = [];
+
+  // 添加效价范围过滤
+  if (emotionalConfig.valenceRange) {
+    emotionFilterConditions.push({
+      key: "emotional_valence",
+      range: {
+        gte: emotionalConfig.valenceRange[0],
+        lte: emotionalConfig.valenceRange[1],
+      },
+    });
+  }
+
+  // 添加唤醒度范围过滤
+  if (emotionalConfig.arousalRange) {
+    emotionFilterConditions.push({
+      key: "emotional_arousal",
+      range: {
+        gte: emotionalConfig.arousalRange[0],
+        lte: emotionalConfig.arousalRange[1],
+      },
+    });
+  }
+
+  // 添加主导情绪过滤
+  if (emotionalConfig.dominantEmotion) {
+    // Qdrant可能不支持直接查询嵌套对象中的最大值字段
+    // 通常需要将主导情绪作为一个顶级字段存储，或者在查询时获取所有维度然后客户端处理
+    // 简化处理：检查指定情绪维度是否有较高分数
+    const emotionKey =
+      `emotional_dimensions.${emotionalConfig.dominantEmotion}`;
+    // 注意：这种嵌套查询需要Qdrant支持，并且可能需要相应的索引设置
+    // 如果不支持，则需要在检索后在客户端进行过滤
+    console.warn(
+      `[QdrantClient] 按主导情绪 (${emotionKey}) 过滤可能需要特定的Qdrant索引或客户端处理。`,
+    );
+    emotionFilterConditions.push({
+      key: emotionKey,
+      range: {
+        gt: 0.5, // 假设分数大于0.5表示显著
+      },
+    });
+  }
+
+  // 添加上下文过滤
+  if (emotionalConfig.contextFilter) {
+    emotionFilterConditions.push({
+      key: "source_context",
+      match: {
+        value: emotionalConfig.contextFilter,
+      },
+    });
+  }
+
+  // 构建最终过滤器
+  const filter: Schemas["Filter"] = {
+    must: emotionFilterConditions,
+  };
+
+  // 执行搜索
+  try {
+    const searchResult = await qdrantClient.search(collectionName, {
+      vector: vector,
+      limit: limit,
+      filter: filter,
+      with_payload: true,
+      score_threshold: emotionalConfig.minimumScore, // 添加得分阈值
+    });
+
+    console.log(
+      `💫 按情感维度在集合 "${collectionName}" 中搜索完成。找到 ${searchResult.length} 个情感匹配的记忆。`,
+    );
+
+    return searchResult as Array<
+      Schemas["ScoredPoint"] & { payload: MemoryPayload }
+    >;
+  } catch (error) {
+    console.error(`❌ 按情感维度搜索记忆时出错:`, error);
     throw error;
   }
 }
