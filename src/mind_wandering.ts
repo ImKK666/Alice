@@ -21,6 +21,15 @@ import {
   upsertMemoryPoints,
 } from "./qdrant_client.ts";
 import { config } from "./config.ts";
+// !!! 新增：导入 main.ts 的函数 !!!
+import {
+  getLastWanderingTime,
+  getStm,
+  kv,
+  setLastWanderingTime,
+} from "./main.ts";
+import { extractRecentTopics } from "./main.ts"; // 也可以把这个函数移到 utils 或 mind_wandering
+import { getBodyState } from "./virtual_embodiment.ts";
 
 /**
  * 思维联想的类型
@@ -41,7 +50,7 @@ export interface Insight {
   id: string; // 唯一ID
   insight_type: InsightType; // 洞见类型
   content: string; // 洞见内容
-  context_ids: string[]; // 相关的上下文ID
+  context_ids: string[]; // 相关的上下文ID (通常是 RAG Context ID)
   source_memories: string[]; // 启发此洞见的记忆ID
   confidence: number; // 信心度 (0.0-1.0)
   timestamp: number; // 创建时间
@@ -54,7 +63,7 @@ export interface Insight {
  */
 export interface WanderingContext {
   user_id: string; // 用户ID
-  context_id: string; // 对话上下文ID
+  context_id: string; // 对话上下文ID (RAG Context ID)
   recent_topics: string[]; // 最近讨论的主题
   emotional_state: { // 当前情感状态
     valence: number; // 效价
@@ -73,7 +82,9 @@ export interface InsightCollection {
 }
 
 // 阈值：两次思维漫游之间的最小时间间隔(ms)
-const MIN_WANDERING_INTERVAL = 5 * 60 * 1000; // 5分钟
+// !!! 修改：从 config 读取 cooldownMinutes !!!
+const MIN_WANDERING_INTERVAL = (config.mindWandering?.cooldownMinutes || 5) *
+  60 * 1000;
 
 // 思维漫游的最大记忆检索数量
 const MAX_MEMORIES_FOR_WANDERING = 15;
@@ -91,12 +102,21 @@ export async function triggerMindWandering(
     `✨ [MindWander] 开始思维漫游过程 (用户: ${context.user_id}, 上下文: ${context.context_id})...`,
   );
 
-  // 检查是否距离上次漫游时间过短
+  // 检查是否距离上次漫游时间过短 (使用导入的函数)
+  const lastWanderTime = await getLastWanderingTime(
+    context.user_id,
+    context.context_id,
+  );
   if (
-    context.last_wandering_time &&
-    Date.now() - context.last_wandering_time < MIN_WANDERING_INTERVAL
+    lastWanderTime && // 检查 lastWanderTime 是否非零
+    Date.now() - lastWanderTime < MIN_WANDERING_INTERVAL
   ) {
-    console.log(`🌙 [MindWander] 距上次漫游时间过短，跳过本次思维漫游。`);
+    console.log(
+      `🌙 [MindWander] 距上次漫游时间过短 (${
+        ((MIN_WANDERING_INTERVAL - (Date.now() - lastWanderTime)) / 60000)
+          .toFixed(1)
+      }分钟剩余)，跳过本次思维漫游。`,
+    );
     return { insights: [] };
   }
 
@@ -108,6 +128,11 @@ export async function triggerMindWandering(
 
     if (relevantMemories.length === 0) {
       console.log(`📭 [MindWander] 没有找到足够的记忆用于思维漫游。`);
+      await setLastWanderingTime(
+        context.user_id,
+        context.context_id,
+        Date.now(),
+      ); //即使没找到记忆也更新时间戳，避免频繁空转
       return { insights: [] };
     }
 
@@ -134,8 +159,13 @@ export async function triggerMindWandering(
       `✅ [MindWander] 思维漫游完成，生成了 ${insights.length} 条洞见 (用时: ${duration}ms)`,
     );
 
-    // 4. 存储生成的洞见到向量数据库
-    await storeInsights(insights, context);
+    // 4. 存储生成的洞见到向量数据库 (如果生成了洞见)
+    if (insights.length > 0) {
+      await storeInsights(insights, context, wanderingFocus); // 传递 wanderingFocus
+    }
+
+    // 5. 更新上次漫游时间戳到 KV
+    await setLastWanderingTime(context.user_id, context.context_id, Date.now());
 
     // 返回结果
     return {
@@ -145,6 +175,16 @@ export async function triggerMindWandering(
     };
   } catch (error) {
     console.error(`❌ [MindWander] 思维漫游过程中出错:`, error);
+    // 即使出错也尝试更新时间戳，避免因错误导致不断重试
+    try {
+      await setLastWanderingTime(
+        context.user_id,
+        context.context_id,
+        Date.now(),
+      );
+    } catch (setError) {
+      console.error("   [MindWander] 更新上次漫游时间戳时也出错:", setError);
+    }
     return { insights: [] };
   }
 }
@@ -160,7 +200,7 @@ async function retrieveMemoriesForWandering(
 ): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>> {
   // 构建查询向量 - 基于最近话题和上下文
   const queryText = [
-    context.context_id,
+    context.context_id, // 使用 RAG Context ID
     ...context.recent_topics,
   ].join(" ");
 
@@ -169,14 +209,21 @@ async function retrieveMemoriesForWandering(
     const vector = await embeddings.embedQuery(queryText);
 
     // 构建过滤器 - 获取当前用户和上下文的记忆
-    // 但不限制太严格，允许一定的关联发散
+    // RAG 上下文相关的记忆优先，但也允许一定程度的发散
     const filter: Schemas["Filter"] = {
       should: [
-        { key: "source_user", match: { value: context.user_id } },
-        { key: "source_context", match: { value: context.context_id } },
-        // 可以加入相关主题的过滤条件
-        // { key: "associative_triggers", match: { any: context.recent_topics } }
+        // RAG 上下文高度相关
+        {
+          must: [{
+            key: "source_context",
+            match: { value: context.context_id },
+          }],
+        },
+        // 同一用户的其他相关记忆
+        { must: [{ key: "source_user", match: { value: context.user_id } }] },
       ],
+      // 增加 minimum_should: 1 可能导致结果过少，暂时不用
+      // minimum_should: 1,
       must_not: [ // 排除AI自己的反思，避免循环
         { key: "memory_type", match: { value: "reflection" } },
       ],
@@ -212,7 +259,9 @@ async function generateWanderingFocus(
   const memoryExcerpts = memories
     .slice(0, 5) // 取最相关的5条
     .map((mem) =>
-      `[${mem.payload.memory_type} from ${mem.payload.source_user}]: ${mem.payload.text_content}`
+      `[${mem.payload.memory_type} from ${mem.payload.source_user}]: ${
+        mem.payload.text_content.substring(0, 100)
+      }...` // 限制预览长度
     )
     .join("\n- ");
 
@@ -248,8 +297,13 @@ async function generateWanderingFocus(
     const focusContent = typeof response === "string"
       ? response
       : (response.content as string);
+    // 增加对空响应的处理
+    if (!focusContent || focusContent.trim().length === 0) {
+      console.warn("[MindWander] LLM 未能生成有效的思维漫游焦点，使用默认值。");
+      return "记忆与经验如何塑造我们对世界的理解";
+    }
 
-    return focusContent.trim() || "记忆与经验如何塑造我们对世界的理解"; // 提供默认焦点
+    return focusContent.trim();
   } catch (error) {
     console.error(`❌ [MindWander] 生成思维漫游焦点时出错:`, error);
     // 返回一个默认焦点
@@ -286,7 +340,9 @@ async function generateInsightsFromFocus(
     memories.map(
       (mem) => [
         mem.id.toString(),
-        `[${mem.payload.memory_type}] ${mem.payload.text_content}`,
+        `[${mem.payload.memory_type}] ${
+          mem.payload.text_content.substring(0, 100)
+        }...`, // Limit preview length
       ],
     ),
   );
@@ -297,7 +353,9 @@ async function generateInsightsFromFocus(
     .map((mem, idx) =>
       `记忆 ${
         idx + 1
-      } [ID: ${mem.id} | 类型: ${mem.payload.memory_type}]: ${mem.payload.text_content}`
+      } [ID: ${mem.id} | 类型: ${mem.payload.memory_type} | 用户: ${
+        mem.payload.source_user.substring(0, 4)
+      }]: ${mem.payload.text_content.substring(0, 100)}...` // Limit length
     )
     .join("\n");
 
@@ -344,6 +402,12 @@ ${
       ? response
       : (response.content as string);
 
+    // 增加健壮性：处理空响应
+    if (!insightContent) {
+      console.warn("[MindWander] LLM未能生成洞见内容。");
+      return [];
+    }
+
     // 清理和解析JSON响应
     const cleanedContent = insightContent.trim().replace(/```json|```/g, "");
     let parsedInsights: Array<{
@@ -364,7 +428,12 @@ ${
         ) {
           parsedInsights = [parsedInsights];
         } else {
-          throw new Error("解析结果不是有效的数组");
+          // 如果仍然不是数组，记录错误并返回空
+          console.error(
+            `[MindWander] 解析洞见JSON时出错: 结果不是有效的数组。内容:`,
+            cleanedContent,
+          );
+          return [];
         }
       }
     } catch (parseError) {
@@ -377,9 +446,15 @@ ${
     const validInsightTypes = Object.keys(insightTypes) as InsightType[];
     const fullInsights: Insight[] = parsedInsights
       .filter((insight) =>
-        insight.insight_type && insight.content &&
-        insight.confidence !== undefined
-      ) // 过滤掉无效结构
+        // 增加更多验证
+        insight && typeof insight === "object" && // 确保是对象
+        insight.insight_type && typeof insight.insight_type === "string" &&
+        insight.content && typeof insight.content === "string" &&
+        insight.content.trim().length > 5 && // 内容非空且有一定长度
+        insight.confidence !== undefined &&
+        typeof insight.confidence === "number" &&
+        Array.isArray(insight.source_memories) // 确保 source_memories 是数组
+      )
       .map((insight) => {
         // 验证 insight_type 是否有效
         const validatedType =
@@ -390,15 +465,15 @@ ${
         return {
           id: crypto.randomUUID(), // 生成唯一ID
           insight_type: validatedType,
-          content: insight.content,
+          content: insight.content.trim(), // 去除前后空格
           context_ids: [context.context_id],
           source_memories: insight.source_memories || [],
           confidence: Math.max(0, Math.min(1, insight.confidence || 0.7)), // 确保信心度在0-1之间
           timestamp: Date.now(),
           use_count: 0,
+          last_used: 0, // 初始化上次使用时间
         };
-      })
-      .filter((insight) => insight.content.length > 5); // 过滤掉内容过短的洞见
+      });
 
     return fullInsights;
   } catch (error) {
@@ -409,13 +484,14 @@ ${
 
 /**
  * 将生成的洞见存储到向量数据库
- *
  * @param insights 洞见数组
  * @param context 漫游上下文
+ * @param wanderingFocus 本次漫游的焦点
  */
 async function storeInsights(
   insights: Insight[],
   context: WanderingContext,
+  wanderingFocus: string, // 接收 wanderingFocus
 ): Promise<void> {
   if (insights.length === 0) return;
 
@@ -431,10 +507,9 @@ async function storeInsights(
           memory_type: "reflection", // 使用reflection作为记忆类型
           timestamp: insight.timestamp,
           source_user: "AI", // 这是AI自己生成的
-          source_context: context.context_id, // 关联到触发漫游的上下文
+          source_context: context.context_id, // 关联到触发漫游的上下文 (RAG Context ID)
           text_content: insight.content,
           importance_score: Math.round(insight.confidence * 4) + 1, // 将信心度转换为1-5的重要性
-          // 附加情感状态
           emotional_valence: context.emotional_state.valence,
           emotional_arousal: context.emotional_state.arousal,
           // 思维漫游特有元数据
@@ -445,14 +520,13 @@ async function storeInsights(
               user_id: context.user_id,
               recent_topics: context.recent_topics,
             },
-            use_count: 0, // 初始化使用次数
-            last_used: 0, // 初始化上次使用时间
+            use_count: insight.use_count || 0, // 使用 insight 中的值或默认值
+            last_used: insight.last_used || 0, // 使用 insight 中的值或默认值
           },
           // 关联触发词可以设置为焦点或最近话题
-          associative_triggers: [focus || "", ...context.recent_topics].slice(
-            0,
-            5,
-          ),
+          // !!! 使用传入的 wanderingFocus !!!
+          associative_triggers: [wanderingFocus || "", ...context.recent_topics]
+            .filter(Boolean).slice(0, 5), // 过滤空字符串
         };
 
         return {
@@ -470,43 +544,43 @@ async function storeInsights(
     );
   } catch (error) {
     console.error(`❌ [MindWander] 存储洞见时出错:`, error);
+    // 记录错误，但不抛出，避免阻塞其他流程
   }
 }
 
 /**
  * 检索适合当前对话的洞见
  *
- * @param message 当前消息
+ * @param message 当前消息 (应包含 RAG Context ID)
  * @param limit 返回的最大洞见数量
  * @returns 相关洞见数组
  */
 export async function retrieveRelevantInsights(
-  message: { text: string; contextId: string; userId: string }, // 添加userId用于可能的用户特定洞见过滤
+  message: { text: string; contextId: string; userId: string }, // contextId is RAG Context ID
   limit: number = 2,
 ): Promise<Insight[]> {
   try {
     // 生成查询向量
     const vector = await embeddings.embedQuery(message.text);
 
-    // 构建过滤器 - 只获取reflection类型的记忆
-    // 可以增加过滤条件，比如只获取与当前用户或上下文相关的洞见
+    // 构建过滤器 - 只获取 reflection 类型的记忆
     const filter: Schemas["Filter"] = {
       must: [
         { key: "memory_type", match: { value: "reflection" } },
+        // 可选：增加 RAG 上下文相关性过滤，但可能限制洞见的通用性
+        // { key: "source_context", match: { value: message.contextId } },
       ],
-      // 增加 should 条件，优先匹配当前上下文或用户的洞见
+      // 可选：优先与当前用户相关的洞见
       // should: [
-      //   { key: "source_context", match: { value: message.contextId } },
-      //   { key: "insight_metadata.wandering_context.user_id", match: { value: message.userId } }
+      //    { key: "insight_metadata.wandering_context.user_id", match: { value: message.userId } }
       // ],
-      // minimum_should: 1 // 至少满足一个 should 条件 (如果启用了should)
     };
 
     // 执行向量搜索
     const searchResults = await searchMemories(
       config.qdrantCollectionName,
       vector,
-      limit * 2, // 多检索一些，以便后续过滤和排序
+      limit * 3, // 多检索一些，以便后续过滤和排序
       filter,
     );
 
@@ -523,30 +597,44 @@ export async function retrieveRelevantInsights(
           id: result.id.toString(),
           insight_type: (metadata.insight_type || "reflection") as InsightType,
           content: payload.text_content,
-          context_ids: [payload.source_context],
+          context_ids: [payload.source_context], // 洞见关联的 RAG Context
           source_memories: metadata.source_memories || [],
           confidence: result.score ||
             (payload.importance_score
-              ? (payload.importance_score - 1) / 4
-              : 0.7), // 使用相关性分数或重要性
+              ? (payload.importance_score - 1) / 4 // Convert importance back to 0-1 range
+              : 0.7), // Default confidence
           timestamp: payload.timestamp,
           use_count: metadata.use_count || 0,
           last_used: metadata.last_used || 0,
         };
       })
       .sort((a, b) => {
-        // 1. 优先未使用过或很久未使用的
-        const usageDiff = (a.last_used || 0) - (b.last_used || 0);
-        if (Math.abs(usageDiff) > 1000 * 60 * 60) { // 超过1小时未使用优先
-          return usageDiff; // last_used 小的优先
-        }
-        // 2. 优先使用次数少的
-        const useCountDiff = (a.use_count || 0) - (b.use_count || 0);
-        if (useCountDiff !== 0) {
-          return useCountDiff; // use_count 小的优先
-        }
-        // 3. 优先信心度/相关性高的
-        return (b.confidence || 0) - (a.confidence || 0);
+        // 1. 时间衰减加权：最近未使用 > 很久未使用
+        const timeSinceUsedA = Date.now() - (a.last_used || 0);
+        const timeSinceUsedB = Date.now() - (b.last_used || 0);
+        // 简单的线性衰减，可以替换为指数衰减
+        const timeWeightA = Math.max(
+          0.1,
+          1 - timeSinceUsedA / (1000 * 60 * 60 * 24 * 7),
+        ); // 7天内权重较高
+        const timeWeightB = Math.max(
+          0.1,
+          1 - timeSinceUsedB / (1000 * 60 * 60 * 24 * 7),
+        );
+
+        // 2. 使用次数惩罚：使用次数少 > 使用次数多
+        const usePenaltyA = 1 / (1 + (a.use_count || 0) * 0.5); // 次数越多，惩罚越大
+        const usePenaltyB = 1 / (1 + (b.use_count || 0) * 0.5);
+
+        // 3. 信心度/相关性基础分
+        const confidenceA = a.confidence || 0;
+        const confidenceB = b.confidence || 0;
+
+        // 综合得分
+        const finalScoreA = confidenceA * timeWeightA * usePenaltyA;
+        const finalScoreB = confidenceB * timeWeightB * usePenaltyB;
+
+        return finalScoreB - finalScoreA; // 综合得分高的优先
       });
 
     // 返回最终限制数量的洞见
@@ -560,82 +648,108 @@ export async function retrieveRelevantInsights(
 /**
  * 定期进行思维漫游的后台任务
  *
- * @param userContextMap 用户-上下文映射
+ * @param userContextMap 用户-上下文映射 Map<userId, ragContextId[]>
  */
 export async function schedulePeriodicMindWandering(
-  userContextMap: Map<string, string[]>, // Map<userId, contextId[]>
+  userContextMap: Map<string, string[]>,
 ): Promise<void> {
-  // 注意：在 Deno Deploy 或类似环境中，长时间运行的 setInterval 可能不可靠或受限。
-  // 可能需要外部调度器（如 Cron Job）来触发此任务。
   console.log(
     `🌊 [MindWander] 启动定期思维漫游任务... (注意: 长时间运行可能受环境限制)`,
   );
 
-  // 记录上次漫游时间的映射 Map<"userId:contextId", timestamp>
-  const lastWanderingTimes = new Map<string, number>();
-
-  // 定义执行漫游的函数
   const performWandering = async () => {
     console.log(`🌀 [MindWander] 执行定期思维漫游检查...`);
-    // 获取所有活跃的用户-上下文对
-    for (const [userId, contextIds] of userContextMap.entries()) {
-      for (const contextId of contextIds) {
-        const key = `${userId}:${contextId}`;
-        const lastTime = lastWanderingTimes.get(key) || 0;
+    const activeContexts = Array.from(userContextMap.entries()); // 获取当前所有活跃用户和他们的 RAG 上下文列表
 
-        // 检查是否应该进行漫游
-        if (Date.now() - lastTime >= MIN_WANDERING_INTERVAL) {
-          try {
-            // --- 获取必要信息 ---
-            // TODO: 实现获取最近话题和情感状态的逻辑
-            // 这可能需要从 Deno KV 或其他地方读取 STM 或最近的情感分析结果
-            const recentTopics: string[] = []; // 示例：需要实际实现
-            const emotionalState = { valence: 0, arousal: 0 }; // 示例：需要实际实现
+    // 对每个活跃的 用户-上下文 对进行处理
+    for (const [userId, ragContextIds] of activeContexts) {
+      // 为每个 RAG 上下文独立检查和触发漫游
+      for (const ragContextId of ragContextIds) {
+        try { // 为每个上下文添加 try-catch
+          const lastTime = await getLastWanderingTime(userId, ragContextId); // 使用 RAG ID 获取上次时间
 
-            // 构建漫游上下文
+          if (Date.now() - lastTime >= MIN_WANDERING_INTERVAL) {
+            console.log(
+              `   -> 检查用户 ${userId} 的 RAG 上下文 ${ragContextId}... 符合漫游条件。`,
+            );
+            // 获取触发漫游所需的信息
+            const stmHistory = await getStm(ragContextId); // 获取对应 RAG Context 的 STM
+            if (stmHistory.length === 0) {
+              console.log(
+                `   -> RAG 上下文 ${ragContextId} STM 为空，跳过漫游。`,
+              );
+              // 即使跳过也更新时间戳，避免不断检查空上下文
+              await setLastWanderingTime(userId, ragContextId, Date.now());
+              continue;
+            }
+
+            const recentTopics = extractRecentTopics(stmHistory);
+            let emotionalState = { valence: 0, arousal: 0.1 }; // 默认平静状态
+            if (kv) { // 仅当 KV 可用时尝试获取身体状态
+              const bodyState = await getBodyState(userId, ragContextId, kv);
+              if (bodyState) {
+                emotionalState = {
+                  valence: (bodyState.comfort_level - 0.5) * 2,
+                  arousal: bodyState.activity_intensity || 0.1, // 保证 arousal > 0
+                };
+              }
+            }
+
             const wanderingContext: WanderingContext = {
               user_id: userId,
-              context_id: contextId,
+              context_id: ragContextId, // 使用 RAG Context ID
               recent_topics: recentTopics,
               emotional_state: emotionalState,
               last_wandering_time: lastTime,
             };
 
-            // 异步执行思维漫游
+            // 异步执行思维漫游，不阻塞其他上下文的检查
             console.log(
-              `   -> 为用户 ${userId} 上下文 ${contextId} 触发思维漫游...`,
+              `   -> 为用户 ${userId} 上下文 ${ragContextId} 触发思维漫游 (异步)...`,
             );
             triggerMindWandering(wanderingContext)
               .then((result) => {
                 if (result.insights.length > 0) {
                   console.log(
-                    `   ✨ [MindWander] 用户 ${userId} 上下文 ${contextId} 漫游成功生成 ${result.insights.length} 条洞见。`,
+                    `   ✨ [MindWander] 用户 ${userId} 上下文 ${ragContextId} 漫游成功生成 ${result.insights.length} 条洞见。`,
                   );
                 }
-                // 更新上次漫游时间
-                lastWanderingTimes.set(key, Date.now());
+                // 更新时间戳的操作已移入 triggerMindWandering 内部
               })
               .catch((err) => {
                 console.error(
-                  `   ❌ [MindWander] 用户 ${userId} 上下文 ${contextId} 思维漫游出错:`,
+                  `   ❌ [MindWander] 用户 ${userId} 上下文 ${ragContextId} 异步思维漫游出错:`,
                   err,
                 );
-                // 即使出错也更新时间，避免短时间内反复失败
-                lastWanderingTimes.set(key, Date.now());
+                // 尝试更新时间戳，避免因错误反复触发
+                setLastWanderingTime(userId, ragContextId, Date.now()).catch(
+                  (setErr) =>
+                    console.error(
+                      "    [MindWander] 更新时间戳时再次出错:",
+                      setErr,
+                    ),
+                );
               });
-            // 短暂延迟避免请求过于密集
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          } catch (error) {
-            console.error(
-              `   ❌ [MindWander] 触发用户 ${userId} 上下文 ${contextId} 定期思维漫游时出错:`,
-              error,
-            );
-            // 即使出错也更新时间
-            lastWanderingTimes.set(key, Date.now());
+
+            // 短暂延迟避免短时内触发过多 LLM 请求
+            await new Promise((resolve) => setTimeout(resolve, 1000)); // 延迟 1 秒
+          } else {
+            // console.log(`   -> 检查用户 ${userId} 的 RAG 上下文 ${ragContextId}... 冷却中，跳过。`);
+          }
+        } catch (contextError) {
+          console.error(
+            `❌ [MindWander] 处理用户 ${userId} 上下文 ${ragContextId} 时出错:`,
+            contextError,
+          );
+          // 尝试更新时间戳，避免因错误反复触发
+          try {
+            await setLastWanderingTime(userId, ragContextId, Date.now());
+          } catch (setErr) {
+            console.error("    [MindWander] 更新时间戳时再次出错:", setErr);
           }
         }
-      }
-    }
+      } // end loop for ragContextIds
+    } // end loop for userContextMap entries
     console.log(`🌀 [MindWander] 定期思维漫游检查完成。`);
   };
 
@@ -643,9 +757,12 @@ export async function schedulePeriodicMindWandering(
   await performWandering();
 
   // 定期执行
-  setInterval(performWandering, 15 * 60 * 1000); // 每15分钟检查一次
+  const intervalMinutes = config.mindWandering?.cooldownMinutes || 15; // 使用配置的冷却时间作为检查间隔
+  setInterval(performWandering, intervalMinutes * 60 * 1000);
 
-  console.log(`🌊 [MindWander] 定期思维漫游任务已启动，每15分钟检查一次。`);
+  console.log(
+    `🌊 [MindWander] 定期思维漫游任务已启动，每 ${intervalMinutes} 分钟检查一次。`,
+  );
 }
 
 // 导出辅助函数及类型

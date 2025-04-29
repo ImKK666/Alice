@@ -208,9 +208,12 @@ export async function startDiscord(): Promise<void> {
     if (isDM) {
       shouldProcess = true;
       processingReason = "私聊消息";
-    } else if (config.discordOwnerId && authorId === config.discordOwnerId) {
+    } else if (
+      config.discordAlwaysReplyToOwner && config.discordOwnerId &&
+      authorId === config.discordOwnerId
+    ) { // <--- 新增：检查强制回复主人的开关
       shouldProcess = true;
-      processingReason = "主人消息";
+      processingReason = "主人消息 (强制回复)"; // 理由可以明确一点
     } else if (mentionsBot) {
       shouldProcess = true;
       processingReason = "提及机器人";
@@ -231,8 +234,10 @@ export async function startDiscord(): Promise<void> {
           messageScore.toFixed(3)
         }) < 阈值 (${processingThreshold})`;
         // 分数不够，直接返回，不处理
-        // console.log(`[Discord] 忽略消息 (原因: ${processingReason}): 用户 ${authorId} 在频道 ${channelId}`);
-        return;
+        console.log(
+          `[Discord] 忽略消息 (原因: ${processingReason}): 用户 ${authorId} 在频道 ${channelId}`,
+        );
+        return; // 移除了原先的主人检查，因为上面已经用开关处理了
       }
     }
 

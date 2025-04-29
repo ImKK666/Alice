@@ -187,6 +187,11 @@ export const config = {
     "启动",
     "停止",
   ]), // 用于消息评分的动作动词 (逗号分隔)
+  /** 是否总是回复主人的消息（无论分数如何） */
+  discordAlwaysReplyToOwner: parseBoolEnv(
+    "DISCORD_ALWAYS_REPLY_TO_OWNER",
+    true,
+  ),
 
   // --- 思维漫游 ---
   mindWandering: {

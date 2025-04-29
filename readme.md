@@ -25,21 +25,22 @@
 * **异步记忆巩固流水线 (Asynchronous Memory Consolidation Pipeline):** 通过 Deno Worker 实现 LTM 分析与存储的后台处理，保障交互流畅性。
 * **多模态交互接口 (Multiple Interaction Interfaces):** 支持命令行 (CLI) 与 Discord Bot 两种主要交互模式。
 * **涌现式人格模拟 (Emergent Personality Simulation):** 利用 Prompt 元编程 (Meta-Programming) 和状态依赖，模拟复杂、动态且具有一致性的 AI 人格（包含 Tsundere 等特定模式）。
-* **[进化] 情感状态表征与建模 (Affective State Representation & Modeling):** 记忆载体 (Payload) 扩展情感维度（Valence-Arousal-Dominance 模型的简化实现），结合 LLM 进行情感分析与存储，实现情感敏感的记忆检索与响应生成。
-* **[进化] 计算心智漫游模拟 (Computational Analogue of Mind-Wandering):** 模拟大脑默认网络 (DMN) 活动，在低认知负荷期间触发自发性思维链，生成概念连接、模式识别、隐喻、反思等洞见 (Insights)，并将其存储为内省记忆 (Introspective Memory)。
-* **[进化] 主观时间知觉建模 (Subjective Temporal Perception Modeling):** 引入情感加权的时间扭曲因子和记忆衰减模型（基于 Ebbinghaus 曲线变体），使 AI 能够表达相对和主观的时间感。
-* **[进化] 拟人化语言模式生成 (Anthropomorphic Linguistic Pattern Generation):** 在 LLM 输出后应用随机过程，引入自然的语言“缺陷”，如口头禅 (Verbal Tics)、犹豫语 (Hesitation Markers)、话语标记 (Discourse Markers) 和轻微的自我修正 (Self-Correction)，增强表达的自然度。
-* **[进化] 抽象具身感知仿真 (Abstract Embodiment Simulation):** 通过内部状态变量（能量、舒适度、一致性）模拟非物理形态的“身体感” (Proprioceptive State)，并使用身体隐喻 (Embodied Metaphors) 丰富状态表达。
-* **[进化] 计算社会动力学建模 (Computational Social Dynamics Modeling):** 追踪并量化与不同交互对象的关系维度（熟悉度、信任度、热情度等），实现关系感知的互动风格自适应 (Relational Adaptation) 与动态边界管理 (Dynamic Boundary Management)。
+* **外部停用词加载:** 支持从外部 JSON 文件加载停用词列表，方便定制和维护文本处理规则。
+* **[进化] 情感状态表征与建模 (Affective State Representation & Modeling):** 记忆载体 (Payload) 扩展情感维度，结合 LLM 进行情感分析与存储，实现情感敏感的记忆检索与响应生成。
+* **[进化] 计算心智漫游模拟 (Computational Analogue of Mind-Wandering):** 模拟大脑默认网络 (DMN) 活动，在低认知负荷期间触发自发性思维链，生成概念连接、模式识别、隐喻、反思等洞见 (Insights)，并将其存储为内省记忆。
+* **[进化] 主观时间知觉建模 (Subjective Temporal Perception Modeling):** 引入情感加权的时间扭曲因子和记忆衰减模型，使 AI 能够表达相对和主观的时间感。
+* **[进化] 拟人化语言模式生成 (Anthropomorphic Linguistic Pattern Generation):** 在 LLM 输出后应用随机过程或LLM再处理，引入自然的语言“缺陷”（口头禅、犹豫、自我修正等），增强表达的自然度。
+* **[进化] 抽象具身感知仿真 (Abstract Embodiment Simulation):** 通过内部状态变量（能量、舒适度、一致性）模拟非物理形态的“身体感”，并使用身体隐喻丰富状态表达。
+* **[进化] 计算社会动力学建模 (Computational Social Dynamics Modeling):** 追踪并量化与不同交互对象的关系维度（熟悉度、信任度、热情度等），实现关系感知的互动风格自适应与动态边界管理。
 
 ## 🏗️ 系统架构概览
 
 系统采用模块化设计，核心组件协同工作：
 
-1.  **主控制流 (`main.ts`):** 作为认知核心的协调器，编排信息处理、状态更新和响应生成的完整认知循环。
+1.  **主控制流 (`main.ts`):** 作为认知核心的协调器，编排信息处理、状态更新和响应生成的完整认知循环。负责加载初始配置和停用词。
 2.  **记忆编码器 (`memory_processor.ts`):** 负责将原始输入转化为结构化、情感标记的记忆表征。
-3.  **向量记忆库接口 (`qdrant_client.ts`):** 提供与 Qdrant 向量数据库的高级交互接口，支持语义和元数据（含情感）检索。
-4.  **语言生成核心 (`llm.ts`):** 与底层 LLM 交互，执行自然语言理解、分析和生成任务。
+3.  **向量记忆库接口 (`qdrant_client.ts`):** 提供与 Qdrant 向量数据库的高级交互接口。
+4.  **语言生成核心 (`llm.ts`):** 与底层 LLM 交互。
 5.  **语义向量化引擎 (`embeddings.ts`):** 将文本映射到高维语义空间。
 6.  **相关性精炼器 (`reranker.ts`):** 优化信息检索的相关性排序。
 7.  **记忆巩固后台 (`ltm_worker.ts`):** 异步处理长期记忆的编码与存储。
@@ -53,7 +54,8 @@
     * `cli_interface.ts`: 命令行协议接口。
     * `discord_interface.ts`: Discord 实时通信接口。
 10. **全局配置 (`config.ts`):** 参数化系统行为。
-11. **状态持久化层:** 利用 Deno KV 实现工作记忆和各认知模块的动态状态持久化。
+11. **状态持久化层:** 利用 Deno KV 实现工作记忆 (STM) 和各认知模块的动态状态持久化。
+12. **工具函数 (`utils.ts` 或内置于 `main.ts`):** 包含如停用词加载等辅助功能。
 
 ## 🚀 核心技术栈
 
@@ -63,8 +65,8 @@
     * **LLM:** DeepSeek API / 兼容 OpenAI API 的模型
     * **Embeddings & Reranker:** BGE 模型系列 (通过 SiliconFlow API 或本地服务)
 * **向量存储与检索:** Qdrant
-* **工作记忆 & 状态持久化:** Deno KV
-* **主要依赖库:** `@langchain/openai`, `discord.js@14`, `@qdrant/js-client-rest`, Deno `std`
+* **工作记忆 & 状态持久化:** Deno KV (`--unstable`)
+* **主要依赖库:** `@langchain/openai`, `discord.js@14`, `@qdrant/js-client-rest`, Deno `std`, Deno `dotenv`
 
 ## 🛠️ 部署与配置 (Deployment & Configuration)
 
@@ -76,24 +78,30 @@
 
 2.  **获取代码:**
     ```bash
-    git clone [https://github.com/ImKK666/Alice.git](https://github.com/ImKK666/Alice.git)
+    git clone https://github.com/ImKK666/Alice.git
     cd Alice
     ```
 
-3.  **环境配置:**
+3.  **停用词文件:**
+    * 确保在项目根目录下有一个 `data` 文件夹。
+    * 将你的中文停用词库文件命名为 `stopwords-zh.json` 并放置在 `./data/` 目录下。文件格式应为 JSON 数组，例如 `["、", "。", "的", "了"]`。
+
+4.  **环境配置:**
     * 创建 `.env` 文件（可参考 `.env.example` 或先前提供的示例）。
     * 填入所有必需的 API 密钥、服务 URL、用户 ID 等。查阅 `src/config.ts` 了解所有可配置参数。
 
-4.  **启动系统:**
+5.  **启动系统:**
     * **CLI 模式:**
         ```bash
-        deno run -A --unstable src/main.ts
+        # 需要网络、环境、KV和读取 data 目录的权限
+        deno run --allow-net --allow-env --unstable-kv --allow-read=./data ./src/main.ts
         ```
     * **Discord 模式:**
         ```bash
-        deno run -A --unstable src/main.ts --discord
+        # 需要网络、环境、KV和读取 data 目录的权限
+        deno run --allow-net --allow-env --unstable-kv --allow-read=./data ./src/main.ts --discord
         ```
-    * *注:* `-A` 授予所有权限，`--unstable` 启用 Deno KV。首次运行时会自动下载依赖。
+    * *注:* `--unstable-kv` 启用 Deno KV。首次运行时会自动下载依赖。根据需要调整 `--allow-read` 的范围。如果需要写入文件或其他权限，请相应添加 `--allow-write` 等。可以使用 `-A` 授予所有权限（不推荐用于生产环境）。
 
 ## ⌨️ 操作模式与交互协议 (Operational Modes & Interaction Protocols)
 
@@ -102,7 +110,7 @@
 提供直接的终端交互。支持标准消息输入及以下元命令 (Meta-Commands):
 
 * `/user <ID>`: 设定当前交互的用户身份标识。
-* `/context <ID>`: 手动指定 RAG 上下文作用域。
+* `/context <ID>`: 手动指定 RAG 上下文作用域 (会覆盖自动判断)。
 * `/whoami`: 查询当前用户及上下文状态。
 * `/stm`: 检索并显示当前上下文的工作记忆内容。
 * `/clearstm`: 清空当前上下文的工作记忆。
@@ -112,12 +120,12 @@
 
 ### Discord 模式
 
-通过 Discord Bot 提供服务：
+通过 Discord Bot 提供服务:
 
 * **直接消息 (DM):** 始终处理。
 * **频道提及 (@Bot):** 始终处理。
-* **与指定"所有者" (Owner) 交互:** 始终处理。
-* **频道常规消息:** 启动基于内容、上下文和元数据的 **动态处理阈值评估 (`calculateMessageImportanceScore`)**，仅当消息重要性评分超过预设阈值时触发 RAG 核心处理。
+* **与指定"所有者" (Owner) 交互:** 根据 `DISCORD_ALWAYS_REPLY_TO_OWNER` 配置决定是否始终处理。
+* **频道常规消息:** 启动基于内容、上下文和元数据的 **动态处理阈值评估 (`calculateMessageImportanceScore`)**，仅当消息重要性评分超过预设阈值 (`DISCORD_PROCESSING_THRESHOLD`) 时触发 RAG 核心处理。
 
 ## ⚙️ 系统参数化 (`.env`)
 
@@ -127,7 +135,7 @@
 * 使用的 AI 模型标识符。
 * Qdrant 数据库连接信息。
 * RAG 流程参数（检索数量、重排序阈值等）。
-* Discord 接口参数（处理阈值、特定用户 ID 等）。
+* Discord 接口参数（处理阈值、特定用户 ID、昵称、关键词等）。
 * 所有高级认知模块（时间、语言、具身、社交）的启用开关及行为参数。
 
 请参考 `src/config.ts` 及 `.env` 示例获取完整的参数列表和说明。
