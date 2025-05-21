@@ -927,6 +927,10 @@ ${response}
     }
   }
 
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
   // ================ 高级认知功能 ================
 
   /**

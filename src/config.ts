@@ -260,6 +260,11 @@ export const config = {
       | "medium"
       | "high", // Prompt 中关系摘要的详细程度
   },
+
+  // --- 认知整合模块 ---
+  cognitiveIntegration: {
+    enabled: parseBoolEnv("COGNITIVE_INTEGRATION_ENABLED", false), // 是否启用认知整合模块
+  },
 };
 
 /**
@@ -297,5 +302,5 @@ console.log(
   `🧠 STM 历史模式: ${config.stmHistoryMode}`,
 );
 console.log(
-  `✨ 进化模块启用状态: 思维漫游[${config.mindWandering.enabled}], 时间感知[${config.timePerception.enabled}], 人类模式[${config.humanPatterns.enabled}], 虚拟具身[${config.virtualEmbodiment.enabled}], 社交动态[${config.socialDynamics.enabled}]`,
+  `✨ 进化模块启用状态: 思维漫游[${config.mindWandering.enabled}], 时间感知[${config.timePerception.enabled}], 人类模式[${config.humanPatterns.enabled}], 虚拟具身[${config.virtualEmbodiment.enabled}], 社交动态[${config.socialDynamics.enabled}], 认知整合[${config.cognitiveIntegration.enabled}]`,
 );
