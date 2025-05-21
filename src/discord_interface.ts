@@ -23,6 +23,9 @@ import {
 import { handleIncomingMessage } from "./main.ts"; // 确保 main 导出了 handleIncomingMessage
 // 注意：移除了 jiebaCut 的导入，因为不再需要分词来匹配关键词
 
+// --- 1. Define discordClient ---
+let discordClient: Client | null = null;
+
 // 状态管理: { channelId (string): lastRAGContextId (string) }
 // discord.js v14 的 ID 通常是字符串
 const channelContextMap = new Map<string, string>();
@@ -55,6 +58,16 @@ function splitMessage(text: string, maxLength = 1990): string[] { // 稍微减�
     messages.push(currentPart);
   }
   return messages.length > 0 ? messages : [""]; // 确保不返回空数组
+}
+
+// --- 2. Create and export initializeDiscordClient ---
+/**
+ * Initializes the Discord client instance for other functions to use.
+ * @param client The discord.js Client instance.
+ */
+export function initializeDiscordClient(client: Client): void {
+  discordClient = client;
+  console.log("[Discord] Discord client initialized for external use.");
 }
 
 /**
@@ -267,6 +280,9 @@ export async function startDiscord(): Promise<void> {
     ],
     partials: [Partials.Channel], // 需要 Partials.Channel 才能接收 DM 事件
   });
+
+  // --- 3. Call initializeDiscordClient ---
+  initializeDiscordClient(client); // Initialize the global client
 
   // --- 事件处理 ---
 
@@ -522,5 +538,115 @@ export async function startDiscord(): Promise<void> {
   } catch (error) {
     console.error("❌ 登录 Discord Bot 失败:", error);
     Deno.exit(1);
+  }
+}
+
+// --- 4. Create and export fetchDiscordHistory ---
+/**
+ * Fetches message history from a Discord channel or DM.
+ * @param discordContextId The RAG context ID (e.g., discord_channel_123 or discord_dm_456)
+ * @param limit The maximum number of messages to fetch.
+ * @returns A promise that resolves to an array of ChatMessageInput or null if an error occurs.
+ */
+export async function fetchDiscordHistory(
+  discordContextId: string,
+  limit: number,
+): Promise<ChatMessageInput[] | null> {
+  if (!discordClient) {
+    console.warn(
+      "[Discord] fetchDiscordHistory called before Discord client was initialized.",
+    );
+    return null;
+  }
+
+  let channelId: string | null = null;
+  let isDm = false;
+
+  if (discordContextId.startsWith(DEFAULT_CONTEXT_PREFIX_CHANNEL)) {
+    channelId = discordContextId.substring(
+      DEFAULT_CONTEXT_PREFIX_CHANNEL.length,
+    );
+  } else if (discordContextId.startsWith(DEFAULT_CONTEXT_PREFIX_DM)) {
+    channelId = discordContextId.substring(DEFAULT_CONTEXT_PREFIX_DM.length);
+    isDm = true;
+  } else {
+    console.error(
+      `[Discord] Invalid discordContextId format: ${discordContextId}`,
+    );
+    return null;
+  }
+
+  if (!channelId) {
+    console.error(
+      `[Discord] Could not extract ID from discordContextId: ${discordContextId}`,
+    );
+    return null;
+  }
+
+  try {
+    let channel: TextChannel | DMChannel | null = null;
+
+    if (isDm) {
+      // For DMs, channelId is actually the userId
+      const userId = channelId;
+      const user = await discordClient.users.fetch(userId);
+      if (!user) {
+        console.warn(`[Discord] User not found for DM history: ${userId}`);
+        return null;
+      }
+      channel = await user.createDM();
+    } else {
+      // For channels, channelId is the channelId
+      const fetchedChannel = await discordClient.channels.fetch(channelId);
+      if (!fetchedChannel) {
+        console.warn(
+          `[Discord] Channel not found for history: ${channelId}`,
+        );
+        return null;
+      }
+      if (
+        fetchedChannel.type === ChannelType.GuildText ||
+        fetchedChannel.type === ChannelType.DM // Should be covered by isDm but good for safety
+      ) {
+        channel = fetchedChannel as TextChannel | DMChannel;
+      } else {
+        console.warn(
+          `[Discord] Channel ${channelId} is not a text-based channel. Type: ${fetchedChannel.type}`,
+        );
+        return null;
+      }
+    }
+
+    if (!channel) {
+      console.warn(
+        `[Discord] Could not obtain channel object for ${discordContextId}`,
+      );
+      return null;
+    }
+
+    const messages = await channel.messages.fetch({ limit });
+    if (!messages || messages.size === 0) {
+      console.log(
+        `[Discord] No messages found in ${discordContextId} with limit ${limit}.`,
+      );
+      return []; // Return empty array if no messages
+    }
+
+    const chatMessages: ChatMessageInput[] = messages.map((msg) => ({
+      userId: msg.author.id,
+      contextId: discordContextId, // Use the original RAG context ID
+      text: msg.content,
+      messageId: msg.id,
+      timestamp: msg.createdTimestamp,
+    }));
+
+    // Discord API returns messages newest first, reverse to get oldest first
+    return chatMessages.reverse();
+  } catch (error) {
+    console.error(
+      `[Discord] Error fetching history for ${discordContextId}:`,
+      error,
+    );
+    return null;
   }
 }
