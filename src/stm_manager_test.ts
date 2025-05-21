@@ -23,7 +23,7 @@ import {
 import { config } from "./config.ts";
 import { kvHolder } from "./main.ts"; // Assuming main.ts exports kvHolder
 import type { ChatMessageInput } from "./memory_processor.ts";
-import { BaseError, KVStoreError } from "../errors.ts";
+import { BaseError, KVStoreError } from "./errors.ts";
 
 
 // Helper function to create mock messages

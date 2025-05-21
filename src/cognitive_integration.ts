@@ -18,7 +18,7 @@
  * 在记忆、思考、自省与共情的星辰之间流动。
  */
 
-import { kv } from "./main.ts"; // 确保 main.ts 导出 kv
+import { kvHolder } from "./main.ts"; // 确保 main.ts 导出 kvHolder
 import { config } from "./config.ts";
 import { llm } from "./llm.ts";
 import { embeddings } from "./embeddings.ts";
@@ -583,7 +583,7 @@ export class CognitiveIntegrationManager {
     if (!this.currentState) return;
 
     try {
-      await kv.set(["cognitive_state", "current"], this.currentState);
+      await kvHolder.instance.set(["cognitive_state", "current"], this.currentState);
     } catch (error) {
       console.error(`❌ 持久化认知状态时出错: ${error}`);
     }
