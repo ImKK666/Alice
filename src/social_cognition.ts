@@ -15,7 +15,7 @@
  */
 
 // --- 核心依赖导入 ---
-import { kv } from "./main.ts"; // 确保 main.ts 导出 kv 实例
+import { kvHolder } from "./main.ts"; // 确保 main.ts 导出 kvHolder 实例
 import { config } from "./config.ts";
 import { llm } from "./llm.ts";
 import {
@@ -371,7 +371,7 @@ export class SocialCognitionManager {
     console.log(
       `[社交认知][调试] 尝试从 KV 获取关系状态: Alice <-> ${entityId}`,
     );
-    if (!kv) {
+    if (!kvHolder.instance) {
       console.warn("[社交认知][日志] KV 存储不可用。返回默认关系状态。");
       return this.createDefaultRelationshipState(entityId);
     }
@@ -380,7 +380,7 @@ export class SocialCognitionManager {
     let state: EnhancedRelationshipState;
 
     try {
-      const result = await kv.get<EnhancedRelationshipState>(key);
+      const result = await kvHolder.instance.get<EnhancedRelationshipState>(key);
       if (result.value) {
         console.log(
           `   [社交认知][调试] KV 中找到关系状态 v${result.value.version}`,
@@ -391,7 +391,7 @@ export class SocialCognitionManager {
           `   [社交认知][调试] KV 中未找到关系状态，创建并存储默认状态...`,
         );
         state = this.createDefaultRelationshipState(entityId);
-        kv.set(key, state).catch((err) =>
+        kvHolder.instance.set(key, state).catch((err) =>
           console.error(
             `❌ [社交认知][错误] 保存默认关系状态失败 (${entityId}):`,
             err,
@@ -451,7 +451,7 @@ export class SocialCognitionManager {
     updates: Partial<EnhancedRelationshipState>,
   ): Promise<EnhancedRelationshipState | null> {
     await this.ensureInitialized();
-    if (!kv) {
+    if (!kvHolder.instance) {
       console.warn(
         "[社交认知][日志] KV 存储不可用。无法更新关系状态。",
       );
@@ -477,7 +477,7 @@ export class SocialCognitionManager {
       for (let i = 0; i < 3 && !success; i++) { // 最多重试3次
         // 1. 获取当前状态和版本号
         const currentState = await this.getRelationshipState(entityId, false); // 从KV强制获取最新
-        const currentEntry = await kv.get<EnhancedRelationshipState>(key);
+        const currentEntry = await kvHolder.instance.get<EnhancedRelationshipState>(key);
         const currentVersionstamp = currentEntry.versionstamp; // 获取版本戳
 
         // 2. 合并更新
@@ -513,7 +513,7 @@ export class SocialCognitionManager {
         updatedState = cleanedState;
 
         // 3. 执行原子更新
-        const atomicOp = kv.atomic()
+        const atomicOp = kvHolder.instance.atomic()
           .check({ key: key, versionstamp: currentVersionstamp }) // 检查版本戳
           .set(key, cleanedState); // 设置新状态
 

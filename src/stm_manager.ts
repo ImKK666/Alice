@@ -2,7 +2,7 @@
 
 import { kvHolder } from "./main.ts";
 import type { ChatMessageInput } from "./memory_processor.ts";
-import { KVStoreError, BaseError } from "../errors.ts"; // Import custom errors
+import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
 import { config } from "./config.ts"; // 1. Import config
 
 export const STM_MAX_MESSAGES = 15; // 短期记忆最大消息数
