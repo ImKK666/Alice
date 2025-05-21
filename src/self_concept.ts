@@ -26,7 +26,7 @@ import {
 import { type ThoughtStream } from "./thought_streams.ts";
 // Imports for sub-managers will be added if they are not present from the reset state.
 // For now, focusing on kvHolder, errors, and llm.
-import { KVStoreError, BaseError, ModuleError } from "../errors.ts";
+import { KVStoreError, BaseError, ModuleError } from "./errors.ts";
 
 
 /**

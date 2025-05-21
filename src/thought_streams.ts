@@ -14,7 +14,7 @@
  * 而是多层思考熔炉中淬炼的灵感结晶。
  */
 
-import { kv } from "./main.ts"; // 确保 main.ts 导出 kv
+import { kvHolder } from "./main.ts"; // 确保 main.ts 导出 kvHolder
 import { config } from "./config.ts";
 import { llm } from "./llm.ts";
 import { type MemoryPayload, type MemoryType } from "./qdrant_client.ts";
@@ -351,14 +351,14 @@ export class ThoughtStreamOrchestrator {
     }
 
     // 从持久化存储获取
-    if (!kv) {
+    if (!kvHolder.instance) {
       console.warn(
         "[思维流][日志] KV 存储不可用，无法从持久化存储获取思维流。",
       );
       return null;
     }
     const streamKey = ["thought_stream", streamId];
-    const entry = await kv.get<ThoughtStream>(streamKey);
+    const entry = await kvHolder.instance.get<ThoughtStream>(streamKey);
 
     if (entry.value) {
       // 加入内存缓存
@@ -393,14 +393,14 @@ export class ThoughtStreamOrchestrator {
     }
 
     // 从持久化存储查找可能不在内存中的活跃流
-    if (!kv) {
+    if (!kvHolder.instance) {
       console.warn(
         "[思维流][日志] KV 存储不可用，无法查找持久化的活跃思维流。",
       );
       return streams; // 只返回内存中的
     }
     const prefix = ["thought_stream_active"];
-    const activeEntries = kv.list<{ streamId: string }>({ prefix });
+    const activeEntries = kvHolder.instance.list<{ streamId: string }>({ prefix });
 
     for await (const entry of activeEntries) {
       const streamId = entry.value.streamId;
@@ -425,13 +425,13 @@ export class ThoughtStreamOrchestrator {
    * @param stream 思维流对象
    */
   private async persistStream(stream: ThoughtStream): Promise<void> {
-    if (!kv) {
+    if (!kvHolder.instance) {
       console.warn("[思维流][日志] KV 存储不可用，无法持久化思维流。");
       return;
     }
     // 存储完整流对象
     const streamKey = ["thought_stream", stream.id];
-    await kv.set(streamKey, stream);
+    await kvHolder.instance.set(streamKey, stream);
 
     // 维护活跃流索引
     const activeKey = ["thought_stream_active", stream.id];
@@ -439,15 +439,15 @@ export class ThoughtStreamOrchestrator {
       stream.status === ThoughtStreamStatus.PROCESSING ||
       stream.status === ThoughtStreamStatus.INITIATED
     ) {
-      await kv.set(activeKey, { streamId: stream.id });
+      await kvHolder.instance.set(activeKey, { streamId: stream.id });
     } else {
       // 如果不再活跃，移除索引
-      await kv.delete(activeKey);
+      await kvHolder.instance.delete(activeKey);
     }
 
     // 按类型维护索引
     const typeKey = ["thought_stream_by_type", stream.type, stream.id];
-    await kv.set(typeKey, { streamId: stream.id });
+    await kvHolder.instance.set(typeKey, { streamId: stream.id });
   }
 }
 

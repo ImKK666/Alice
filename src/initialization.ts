@@ -1,7 +1,7 @@
 // src/initialization.ts
 import type { Worker as LtmWorkerType } from "./main.ts"; // Import type for ltmWorker
 import { kvHolder, ltmWorkerHolder } from "./main.ts"; // Import holders for assignment
-import { KVStoreError, BaseError } from "../errors.ts"; // Import custom errors
+import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
 
 // --- 初始化 STM (Deno KV) ---
 export async function initializeKv() {

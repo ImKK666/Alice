@@ -10,7 +10,7 @@
  * 4. 根据情感强度和检索频率动态调整记忆重要性
  */
 
-import { kv } from "./main.ts"; // 确保 main.ts 导出 kv
+import { kvHolder } from "./main.ts"; // 确保 main.ts 导出 kvHolder
 import { config } from "./config.ts";
 import {
   type MemoryPayload,
@@ -22,8 +22,7 @@ import {
 } from "./qdrant_client.ts";
 import { llm } from "./llm.ts";
 import { embeddings } from "./embeddings.ts";
-import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
-import { config } from "./config.ts"; // Import config for modelName
+import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
 
 
 /**
@@ -116,7 +115,7 @@ export async function createMemoryRelation(
 
   // 存储关系信息
   const relationKey = ["memory_relation", relationId];
-  await kv.set(relationKey, fullRelation);
+  await kvHolder.instance.set(relationKey, fullRelation);
 
   // 建立源记忆索引
   const sourceIndex = [
@@ -125,7 +124,7 @@ export async function createMemoryRelation(
     relation.timestamp.toString(),
     relationId,
   ];
-  await kv.set(sourceIndex, { relationId });
+  await kvHolder.instance.set(sourceIndex, { relationId });
 
   // 建立目标记忆索引
   const targetIndex = [
@@ -134,7 +133,7 @@ export async function createMemoryRelation(
     relation.timestamp.toString(),
     relationId,
   ];
-  await kv.set(targetIndex, { relationId });
+  await kvHolder.instance.set(targetIndex, { relationId });
 
   console.log(
     `🔗 创建记忆关联: ${relation.sourceId} --[${relation.relationType}]--> ${relation.targetId}`,
@@ -151,7 +150,7 @@ export async function getMemoryRelation(
   relationId: string,
 ): Promise<MemoryRelation | null> {
   const relationKey = ["memory_relation", relationId];
-  const entry = await kv.get<MemoryRelation>(relationKey);
+  const entry = await kvHolder.instance.get<MemoryRelation>(relationKey);
   return entry.value;
 }
 
@@ -166,7 +165,7 @@ export async function updateMemoryRelation(
   updates: Partial<Omit<MemoryRelation, "id" | "sourceId" | "targetId">>,
 ): Promise<boolean> {
   const relationKey = ["memory_relation", relationId];
-  const entry = await kv.get<MemoryRelation>(relationKey);
+  const entry = await kvHolder.instance.get<MemoryRelation>(relationKey);
 
   if (!entry.value) {
     console.log(`⚠️ 无法更新关联，ID不存在: ${relationId}`);
@@ -178,7 +177,7 @@ export async function updateMemoryRelation(
     ...updates,
   };
 
-  await kv.set(relationKey, updatedRelation);
+  await kvHolder.instance.set(relationKey, updatedRelation);
   console.log(
     `✨ 更新记忆关联: ${relationId}, 新强度: ${
       updatedRelation.strength.toFixed(2)
@@ -198,7 +197,7 @@ export async function getRelationsFrom(
   const relationsFrom: MemoryRelation[] = [];
   const prefix = ["memory_relations_from", memoryId];
 
-  for await (const entry of kv.list<{ relationId: string }>({ prefix })) {
+  for await (const entry of kvHolder.instance.list<{ relationId: string }>({ prefix })) {
     const relation = await getMemoryRelation(entry.value.relationId);
     if (relation) {
       relationsFrom.push(relation);
@@ -219,7 +218,7 @@ export async function getRelationsTo(
   const relationsTo: MemoryRelation[] = [];
   const prefix = ["memory_relations_to", memoryId];
 
-  for await (const entry of kv.list<{ relationId: string }>({ prefix })) {
+  for await (const entry of kvHolder.instance.list<{ relationId: string }>({ prefix })) {
     const relation = await getMemoryRelation(entry.value.relationId);
     if (relation) {
       relationsTo.push(relation);
@@ -576,7 +575,7 @@ export async function createConsolidationTask(
   };
 
   const taskKey = ["memory_consolidation_task", taskId];
-  await kv.set(taskKey, fullTask);
+  await kvHolder.instance.set(taskKey, fullTask);
 
   // 创建调度索引
   const scheduleKey = [
@@ -584,7 +583,7 @@ export async function createConsolidationTask(
     task.scheduledTime.toString(),
     taskId,
   ];
-  await kv.set(scheduleKey, { taskId });
+  await kvHolder.instance.set(scheduleKey, { taskId });
 
   console.log(
     `📝 创建记忆巩固任务: ${taskId}, 类型: ${task.type}, 计划时间: ${
@@ -607,7 +606,7 @@ export async function getPendingConsolidationTasks(
 
   // 获取所有截止到当前时间的待处理任务
   const prefix = ["memory_task_schedule"];
-  const iter = kv.list<{ taskId: string }>({ prefix });
+  const iter = kvHolder.instance.list<{ taskId: string }>({ prefix });
 
   for await (const entry of iter) {
     // 检查时间戳是否在当前时间之前
@@ -616,7 +615,7 @@ export async function getPendingConsolidationTasks(
 
     if (timestamp <= now) {
       const taskKey = ["memory_consolidation_task", entry.value.taskId];
-      const taskEntry = await kv.get<ConsolidationTask>(taskKey);
+      const taskEntry = await kvHolder.instance.get<ConsolidationTask>(taskKey);
 
       if (taskEntry.value && !taskEntry.value.completed) {
         tasks.push(taskEntry.value);
@@ -643,7 +642,7 @@ export async function completeConsolidationTask(
   taskId: string,
 ): Promise<boolean> {
   const taskKey = ["memory_consolidation_task", taskId];
-  const entry = await kv.get<ConsolidationTask>(taskKey);
+  const entry = await kvHolder.instance.get<ConsolidationTask>(taskKey);
 
   if (!entry.value) return false;
 
@@ -652,7 +651,7 @@ export async function completeConsolidationTask(
     completed: true,
   };
 
-  await kv.set(taskKey, updatedTask);
+  await kvHolder.instance.set(taskKey, updatedTask);
 
   // 删除调度索引以避免重复处理
   const scheduleKey = [
@@ -660,7 +659,7 @@ export async function completeConsolidationTask(
     entry.value.scheduledTime.toString(),
     taskId,
   ];
-  await kv.delete(scheduleKey);
+  await kvHolder.instance.delete(scheduleKey);
 
   console.log(`✅ 完成记忆巩固任务: ${taskId}`);
   return true;

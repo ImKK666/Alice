@@ -18,7 +18,7 @@ import {
   formatEmotionState,
   getEmotionKeywords,
 } from "./cognitive_utils.ts";
-import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
+import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
 
 // Obtain an instance of SocialCognitionManager
 const socialCognition = getSocialCognitionManager();

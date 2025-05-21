@@ -2,7 +2,7 @@
 /**
  * 配置模块 - 管理应用程序的所有配置项
  */
-import { load } from "https://deno.land/std@0.220.1/dotenv/mod.ts";
+import { load } from "https://deno.land/std@0.224.0/dotenv/mod.ts";
 
 // --- 加载环境变量 ---
 let envVars: Record<string, string> = {};

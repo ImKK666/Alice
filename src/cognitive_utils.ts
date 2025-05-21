@@ -3,7 +3,7 @@
 import { llm } from "./llm.ts";
 import type { EmotionDimension } from "./qdrant_client.ts";
 import { config } from "./config.ts";
-import { LLMError, ModuleError } from "../errors.ts";
+import { LLMError, ModuleError, BaseError } from "./errors.ts";
 export async function analyzeMessageSentiment(text: string): Promise<{
   valence: number;
   arousal: number;
@@ -222,9 +222,6 @@ export async function detectImportantMessage(messageText: string): Promise<
       prompt: prompt.substring(0, 200) + "...",
     });
     // Fallback return is removed.
-      emotionDimensions: { "neutral": 1.0 },
-      dominant_emotion: "neutral",
-    };
   }
 }
 
