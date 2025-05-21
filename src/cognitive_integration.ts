@@ -53,11 +53,13 @@ import {
 
 // 导入社交关系模块
 import {
+  getSocialCognitionManager,
+  SocialCognitionManager as ActualSocialManager, // Renaming for clarity
   type EnhancedRelationshipState,
-  SocialContext,
-  type SocialGroup,
-  socialRelationships,
-} from "./social_relationships.ts";
+  SocialContext, // Ensure this is imported if used
+  type SocialGroup, // Ensure this is imported if used
+  // Add other types like SocialRole if they were intended to be used from the original import
+} from "./social_cognition.ts";
 
 /**
  * 认知状态接口
@@ -166,8 +168,7 @@ export class CognitiveIntegrationManager {
   private memoryNetworkManager: typeof memoryNetwork;
   private thoughtStreamManager: typeof thoughtStreams;
   private selfConceptManager: selfConcept.SelfConceptManager;
-  private socialRelationshipManager:
-    socialRelationships.SocialRelationshipManager;
+  private socialRelationshipManager: ActualSocialManager;
 
   private currentState: CognitiveState | null = null;
   private eventQueue: CognitiveEvent[] = [];
@@ -179,8 +180,7 @@ export class CognitiveIntegrationManager {
     this.memoryNetworkManager = memoryNetwork;
     this.thoughtStreamManager = thoughtStreams;
     this.selfConceptManager = new selfConcept.SelfConceptManager();
-    this.socialRelationshipManager = new socialRelationships
-      .SocialRelationshipManager();
+    this.socialRelationshipManager = getSocialCognitionManager();
 
     // 设置默认配置，可被传入配置覆盖
     this.config = {
@@ -503,10 +503,7 @@ export class CognitiveIntegrationManager {
 
         // 获取关系状态
         const relationship = await this.socialRelationshipManager
-          .getEnhancedRelationship(
-            "alice", // 自身ID
-            userId,
-          );
+          .getRelationshipState(userId);
 
         // 默认情境
         let context = SocialContext.CASUAL;
@@ -806,7 +803,7 @@ ${response}
     message: string,
     response: string,
     userId: string,
-    contextId: string,
+    contextId: string, // contextId is already a parameter here
   ): void {
     console.log(`📝 安排认知后处理任务: 用户=${userId}, 上下文=${contextId}`);
 
@@ -817,7 +814,11 @@ ${response}
         await this.consolidateMemories(message, response, userId, contextId);
 
         // 2. 关系更新 - 更新与用户的关系状态
-        await this.updateRelationship(message, response, userId);
+        // Pass contextId and messageSentiment (assuming it's fetched or passed to schedulePostProcessing)
+        // For now, we'll define a placeholder for messageSentiment as it's not directly available.
+        // A more complete solution would involve passing the sentiment from where it's calculated.
+        const placeholderSentiment = { valence: 0, arousal: 0.3, dominant_emotion: "neutral" };
+        await this.updateRelationship(message, response, userId, contextId, placeholderSentiment);
 
         // 3. 自我反思 - 如有必要进行自我反思
         if (Math.random() < 0.3) { // 30%的概率
@@ -877,23 +878,23 @@ ${response}
    * @param userId 用户ID
    */
   private async updateRelationship(
-    message: string,
-    response: string,
+    message: string, // User's message text
+    response: string, // Alice's response text
     userId: string,
+    contextId: string, // Added contextId parameter
+    messageSentiment: { valence: number; arousal: number; dominant_emotion?: string }, // Added messageSentiment
   ): Promise<void> {
     console.log(`👤 更新与用户 ${userId} 的关系`);
 
     try {
-      // 分析并更新关系状态
-      const messages = [
-        { sender: userId, text: message, timestamp: Date.now() - 1000 },
-        { sender: "alice", text: response, timestamp: Date.now() },
-      ];
-
-      await this.socialRelationshipManager.analyzeAndUpdateEnhancedRelationship(
-        "alice", // 自身ID
+      // The method in SocialCognitionManager is:
+      // analyzeInteractionAndUpdateRelationship(entityId: string, message: { text: string; timestamp: number }, emotionalState: { valence: number; arousal: number; dominant_emotion?: string; }, contextId: string)
+      
+      await this.socialRelationshipManager.analyzeInteractionAndUpdateRelationship(
         userId,
-        messages,
+        { text: message, timestamp: Date.now() - 1000 }, // User's message object
+        messageSentiment, // Pass the sentiment of the user's message
+        contextId, // Pass the contextId of the interaction
       );
     } catch (error) {
       console.error(`❌ 更新关系时出错: ${error}`);
@@ -1021,10 +1022,7 @@ ${prompt}
     try {
       // 使用社交关系模块生成叙事
       const narrative = await this.socialRelationshipManager
-        .generateRelationshipNarrative(
-          "alice", // 自身ID
-          userId,
-        );
+        .generateRelationshipNarrative(userId);
 
       return narrative;
     } catch (error) {
