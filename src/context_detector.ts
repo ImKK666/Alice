@@ -2,8 +2,8 @@
 
 import { llm } from "./llm.ts";
 import type { ChatMessageInput } from "./memory_processor.ts";
-import { BaseError, LLMError, ModuleError } from "../errors.ts"; // Import custom errors
-import { config } from "../config.ts"; // Import config for modelName
+import { BaseError, LLMError, ModuleError } from "./errors.ts"; // Import custom errors
+import { config } from "./config.ts"; // Import config for modelName
 /**
  * 步骤 0: 自动判断当前 RAG 上下文
  */

@@ -3,7 +3,7 @@
 import { kvHolder } from "./main.ts";
 import type { ValueDomain } from "./self_concept.ts"; // ValueDomain is used by SelfAspiration
 import { v4 as uuidv4 } from "https://deno.land/std@0.224.0/uuid/mod.ts";
-import { KVStoreError, BaseError } from "../errors.ts"; // Import custom errors
+import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
 
 /**
  * 自我愿景接口

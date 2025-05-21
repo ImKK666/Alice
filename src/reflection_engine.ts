@@ -3,8 +3,8 @@
 import { llm } from "./llm.ts";
 import type { SelfModel } from "./self_concept.ts";
 import { ValueDomain } from "./self_concept.ts"; // ValueDomain is used in prompts
-import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
-import { config } from "../config.ts"; // Import config for modelName
+import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
+import { config } from "./config.ts"; // Import config for modelName
 
 export class ReflectionEngine {
   constructor() {

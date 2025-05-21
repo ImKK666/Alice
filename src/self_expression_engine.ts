@@ -4,8 +4,8 @@ import { llm } from "./llm.ts";
 import type { SelfModel } from "./self_concept.ts";
 import type { AutobiographicalEvent } from "./autobiography_manager.ts";
 import type { SelfAspiration } from "./aspirations_manager.ts";
-import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
-import { config } from "../config.ts"; // Import config for modelName
+import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
+import { config } from "./config.ts"; // Import config for modelName
 // ValueDomain is part of SelfModel.values, so it's implicitly available through currentSelfModel.
 
 export class SelfExpressionEngine {

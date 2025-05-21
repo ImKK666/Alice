@@ -5,8 +5,8 @@ import { llm } from "./llm.ts";
 import type { SelfModel } from "./self_concept.ts"; // For type hints
 import { ValueDomain } from "./self_concept.ts"; // Enum import
 import { v4 as uuidv4 } from "https://deno.land/std@0.224.0/uuid/mod.ts";
-import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
-import { config } from "../config.ts"; // Import config for modelName
+import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
+import { config } from "./config.ts"; // Import config for modelName
 
 /**
  * 伦理框架枚举

@@ -2,7 +2,7 @@
 
 import { kvHolder } from "./main.ts";
 import type { ChatMessageInput } from "./memory_processor.ts"; // Although not directly used in function signatures, it's good for context if these functions were to expand.
-import { KVStoreError, BaseError } from "../errors.ts"; // Import custom errors
+import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
 
 /** 更新活跃用户上下文映射 */
 export function updateActiveUserContexts(
