@@ -132,6 +132,9 @@ export const config = {
   ragRecentLtmLimit: parseIntEnv("RAG_RECENT_LTM_LIMIT", 2), // "近期记忆"策略检索的数量
   ragMaxMemoriesInPrompt: parseIntEnv("RAG_MAX_MEMORIES_IN_PROMPT", 3), // 注入 Prompt 的最大记忆数量
 
+  // --- STM (Short-Term Memory) 配置 ---
+  stmHistoryMode: getStringEnv("STM_HISTORY_MODE", "kv") as "kv" | "platform", // STM 历史记录管理方式
+
   // --- Discord Bot 配置 ---
   discordBotToken: getOptionalStringEnv("DISCORD_BOT_TOKEN"), // Discord Bot 令牌
   discordOwnerId: getOptionalStringEnv("DISCORD_OWNER_ID"), // Discord 主人的用户 ID
@@ -289,6 +292,9 @@ console.log(
 );
 console.log(
   `📍 Qdrant: 地址=${config.qdrantUrl}, 集合=${config.qdrantCollectionName}`,
+);
+console.log(
+  `🧠 STM 历史模式: ${config.stmHistoryMode}`,
 );
 console.log(
   `✨ 进化模块启用状态: 思维漫游[${config.mindWandering.enabled}], 时间感知[${config.timePerception.enabled}], 人类模式[${config.humanPatterns.enabled}], 虚拟具身[${config.virtualEmbodiment.enabled}], 社交动态[${config.socialDynamics.enabled}]`,
