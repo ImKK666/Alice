@@ -85,7 +85,7 @@ import { // 导入记忆网络模块
   memoryNetwork, // 导入整个模块接口
   type MemoryRelation, // 记忆关联接口
 } from "./memory_network.ts";
-// import { cognitiveIntegration } from "./cognitive_integration.ts"; // 暂不引入协调中心
+import { cognitiveIntegration } from "./cognitive_integration.ts"; // 引入认知整合模块
 // import { thoughtStreams } from "./thought_streams.ts"; // 暂不替换响应逻辑
 
 // --- 类型定义 ---
@@ -108,6 +108,7 @@ let loadedStopwordsSet: Set<string> = new Set();
 // --- 模块实例 ---
 const socialCognition = getSocialCognitionManager(); // 获取社交认知管理器实例
 const selfConceptManager = new selfConcept.SelfConceptManager(); // 创建自我概念管理器实例
+let cognitiveIntegrationManager: cognitiveIntegration.CognitiveIntegrationManager | null = null; // 认知整合管理器实例
 
 // --- 从 initialization.ts 导入初始化函数 ---
 import { initializeKv, initializeLtmWorker } from "./initialization.ts";
@@ -187,8 +188,39 @@ export async function handleIncomingMessage(
   let currentRagContextId = initialContextId; // Keep track of context for error reporting
 
   try {
+    // --- 认知整合模块优先处理 ---
+    if (
+      config.cognitiveIntegration.enabled &&
+      cognitiveIntegrationManager &&
+      cognitiveIntegrationManager.isInitialized()
+    ) {
+      try {
+        console.log(
+          `\n🌌 [CognitiveIntegration][日志] 使用认知整合模块处理消息 (用户: ${userId}, 来源: ${sourceContextId}, RAG上下文: ${currentRagContextId})`,
+        );
+        const cimResponseText = await cognitiveIntegrationManager.processMessage(
+          message.text,
+          userId,
+          currentRagContextId, // 使用当前的 RAG 上下文 ID
+        );
+
+        if (cimResponseText && typeof cimResponseText === 'string' && cimResponseText.trim() !== "") {
+          console.log("✅ [CognitiveIntegration][日志] 认知整合模块成功生成响应。");
+          const endTime = Date.now();
+          console.log(
+            `✅ [Core][日志] 消息处理完成 (认知整合路径，总耗时: ${(endTime - startTime) / 1000} 秒)`,
+          );
+          return { responseText: cimResponseText, newContextId: currentRagContextId };
+        } else {
+          console.warn("⚠️ [CognitiveIntegration][日志] 认知整合模块未生成有效响应，将回退到核心逻辑。");
+        }
+      } catch (cimError) {
+        console.error("❌ [CognitiveIntegration][错误] 认知整合模块处理消息时发生错误，将回退到核心逻辑:", cimError);
+      }
+    }
+    // 如果认知整合模块未启用、未成功处理或发生错误，则继续执行核心逻辑
     console.log(
-      `\n🚀 [Core][日志] 开始处理消息 (用户: ${userId}, 来源: ${sourceContextId}, 初始RAG上下文: ${initialContextId})`,
+      `\n🚀 [Core][日志] 开始/继续核心消息处理 (用户: ${userId}, 来源: ${sourceContextId}, 初始RAG上下文: ${initialContextId})`,
     );
 
     updateActiveUserContexts(activeUserContexts, userId, sourceContextId); // Pass activeUserContexts map
@@ -602,6 +634,22 @@ async function main() {
     selfConceptManager.initialize().catch((err) =>
       console.error("❌ 自我概念模块初始化失败:", err)
     ),
+    (async () => {
+      if (config.cognitiveIntegration.enabled) {
+        try {
+          console.log("[初始化][日志] 2b. 初始化认知整合模块...");
+          cognitiveIntegrationManager =
+            new cognitiveIntegration.CognitiveIntegrationManager();
+          await cognitiveIntegrationManager.initialize();
+          console.log("✅ 认知整合模块初始化成功。");
+        } catch (err) {
+          console.error("❌ 认知整合模块初始化失败:", err);
+          // 可以选择不在这里退出，让核心流程继续运行
+        }
+      } else {
+        console.log("ℹ️ 认知整合模块已禁用或配置缺失。");
+      }
+    })(),
   ]);
 
   console.log("----------------------------------------------");
