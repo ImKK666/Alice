@@ -15,7 +15,7 @@
  * 这不仅是代码的集合，更是一场关于"我是谁"的诗意探索。
  */
 
-import { kv } from "./main.ts"; // 确保 main.ts 导出 kv
+import { kvHolder } from "./main.ts"; // Changed from kv to kvHolder
 import { config } from "./config.ts";
 import { llm } from "./llm.ts";
 import {
@@ -24,6 +24,10 @@ import {
   searchMemories,
 } from "./qdrant_client.ts";
 import { type ThoughtStream } from "./thought_streams.ts";
+// Imports for sub-managers will be added if they are not present from the reset state.
+// For now, focusing on kvHolder, errors, and llm.
+import { KVStoreError, BaseError, ModuleError } from "../errors.ts";
+
 
 /**
  * 价值领域枚举
@@ -178,7 +182,15 @@ export class SelfConceptManager {
     console.log("💫 初始化自我概念系统...");
 
     // 尝试从存储加载
-    const modelEntry = await kv.get<SelfModel>(["self_model", "primary"]);
+    const key = ["self_model", "primary"];
+    if (!kvHolder.instance) {
+        // This error will be handled by a try-catch in a subsequent step.
+        // For now, just ensure the usage is correct.
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of initialize.");
+        // To prevent further errors in this specific operation if kvHolder.instance is indeed null:
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.initialize"});
+    }
+    const modelEntry = await kvHolder.instance!.get<SelfModel>(key);
 
     if (modelEntry.value) {
       this.selfModel = modelEntry.value;
@@ -280,8 +292,13 @@ export class SelfConceptManager {
       },
     };
 
+    const key = ["self_model", "primary"];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of createInitialSelfModel.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.createInitialSelfModel"});
+    }
     // 持久化存储
-    await kv.set(["self_model", "primary"], model);
+    await kvHolder.instance!.set(key, model);
 
     // 创建初始愿景
     await this.createAspiration(
@@ -332,8 +349,13 @@ export class SelfConceptManager {
       version: this.selfModel!.version + 0.1,
     };
 
+    const key = ["self_model", "primary"];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of updateSelfModel.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.updateSelfModel"});
+    }
     // 持久化更新
-    await kv.set(["self_model", "primary"], this.selfModel);
+    await kvHolder.instance!.set(key, this.selfModel);
 
     console.log(`📝 更新自我模型至 v${this.selfModel.version}`);
   }
@@ -369,8 +391,13 @@ export class SelfConceptManager {
       updatedAt: now,
     };
 
+    const keyAspiration = ["self_aspiration", aspirationId];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of createAspiration.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.createAspiration"});
+    }
     // 存储愿景
-    await kv.set(["self_aspiration", aspirationId], aspiration);
+    await kvHolder.instance!.set(keyAspiration, aspiration);
 
     // 更新自我模型中的愿景列表
     this.selfModel!.aspirations.push(aspirationId);
@@ -393,8 +420,12 @@ export class SelfConceptManager {
 
     const aspirations: SelfAspiration[] = [];
 
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of getAllAspirations.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.getAllAspirations"});
+    }
     for (const aspirationId of this.selfModel!.aspirations) {
-      const entry = await kv.get<SelfAspiration>([
+      const entry = await kvHolder.instance!.get<SelfAspiration>([
         "self_aspiration",
         aspirationId,
       ]);
@@ -415,10 +446,12 @@ export class SelfConceptManager {
     aspirationId: string,
     progress: number,
   ): Promise<void> {
-    const entry = await kv.get<SelfAspiration>([
-      "self_aspiration",
-      aspirationId,
-    ]);
+    const keyAspiration = ["self_aspiration", aspirationId];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of updateAspirationProgress.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.updateAspirationProgress"});
+    }
+    const entry = await kvHolder.instance!.get<SelfAspiration>(keyAspiration);
     if (!entry.value) {
       console.log(`⚠️ 找不到愿景: ${aspirationId}`);
       return;
@@ -430,7 +463,7 @@ export class SelfConceptManager {
       updatedAt: Date.now(),
     };
 
-    await kv.set(["self_aspiration", aspirationId], updatedAspiration);
+    await kvHolder.instance!.set(keyAspiration, updatedAspiration);
     console.log(
       `📊 更新愿景进度: ${aspirationId}, 进度: ${(progress * 100).toFixed(1)}%`,
     );
@@ -473,8 +506,13 @@ export class SelfConceptManager {
       domains,
     };
 
+    const keyEvent = ["autobiographical_event", eventId];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of recordSignificantEvent.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.recordSignificantEvent"});
+    }
     // 存储事件
-    await kv.set(["autobiographical_event", eventId], event);
+    await kvHolder.instance!.set(keyEvent, event);
 
     // 更新自我模型中的事件列表
     this.selfModel!.significantEvents.push(eventId);
@@ -497,8 +535,12 @@ export class SelfConceptManager {
 
     const events: AutobiographicalEvent[] = [];
 
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of getAllSignificantEvents.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.getAllSignificantEvents"});
+    }
     for (const eventId of this.selfModel!.significantEvents) {
-      const entry = await kv.get<AutobiographicalEvent>([
+      const entry = await kvHolder.instance!.get<AutobiographicalEvent>([
         "autobiographical_event",
         eventId,
       ]);
@@ -560,8 +602,13 @@ export class SelfConceptManager {
       timestamp: Date.now(),
     };
 
+    const keyDecision = ["ethical_decision", decisionId];
+    if (!kvHolder.instance) {
+        console.error("[SelfConceptManager] KV store (kvHolder.instance) is not initialized at the start of makeEthicalDecision.");
+        throw new ModuleError("KV store (kvHolder.instance) is not initialized.", {moduleName: "SelfConceptManager.makeEthicalDecision"});
+    }
     // 存储决策
-    await kv.set(["ethical_decision", decisionId], decision);
+    await kvHolder.instance!.set(keyDecision, decision);
 
     console.log(`✨ 完成伦理决策: ${decisionId}`);
     return decision;

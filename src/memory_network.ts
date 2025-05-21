@@ -22,6 +22,9 @@ import {
 } from "./qdrant_client.ts";
 import { llm } from "./llm.ts";
 import { embeddings } from "./embeddings.ts";
+import { BaseError, LLMError } from "../errors.ts"; // Import custom errors
+import { config } from "./config.ts"; // Import config for modelName
+
 
 /**
  * 记忆关联类型枚举
@@ -424,54 +427,37 @@ export async function analyzeMemoryRelation(
 
   try {
     const analysis = await llm.invoke(prompt);
-    const analysisText = analysis.content;
+    const analysisText = analysis.content as string;
 
-    // 如果LLM判断无显著关联，返回null
     if (analysisText.includes("无显著关联")) {
       return null;
     }
 
-    // 分析LLM输出，提取关系类型、描述和强度
     let relationType: RelationType | undefined;
     let description = "";
-    let strength = 0.5; // 默认中等强度
+    let strength = 0.5;
 
-    // 提取关系类型
     for (const type of Object.values(RelationType)) {
       if (analysisText.includes(type)) {
         relationType = type as RelationType;
         break;
       }
     }
+    if (!relationType) relationType = RelationType.SIMILARITY;
 
-    // 如果找不到明确的关系类型，默认为相似关系
-    if (!relationType) {
-      relationType = RelationType.SIMILARITY;
-    }
+    const descriptionMatch = analysisText.match(/关系描述[：:]\s*(.+?)(?:\n|$)/);
+    description = descriptionMatch
+      ? descriptionMatch[1].trim()
+      : analysisText.slice(0, 200);
 
-    // 尝试提取关系描述
-    const descriptionMatch = analysisText.match(
-      /关系描述[：:]\s*(.+?)(?:\n|$)/,
-    );
-    if (descriptionMatch) {
-      description = descriptionMatch[1].trim();
-    } else {
-      // 如果没有明确的描述格式，使用整个分析作为描述
-      description = analysisText.slice(0, 200); // 限制长度
-    }
-
-    // 尝试提取关系强度
     const strengthMatch = analysisText.match(/关系强度[：:]\s*(\d+\.\d+|\d+)/);
     if (strengthMatch) {
       const parsedStrength = parseFloat(strengthMatch[1]);
-      if (
-        !isNaN(parsedStrength) && parsedStrength >= 0 && parsedStrength <= 1
-      ) {
+      if (!isNaN(parsedStrength) && parsedStrength >= 0 && parsedStrength <= 1) {
         strength = parsedStrength;
       }
     }
 
-    // 构建关系对象
     return {
       sourceId: sourceMemory.metadata?.id as string,
       targetId: targetMemory.metadata?.id as string,
@@ -482,8 +468,21 @@ export async function analyzeMemoryRelation(
       timestamp: Date.now(),
     };
   } catch (error) {
-    console.error(`❌ 分析记忆关联时出错: ${error}`);
-    return null;
+    console.error(
+        `❌ [MemoryNetwork] 分析记忆关联时LLM调用失败:`,
+        error instanceof BaseError ? error.toString() : error.message,
+        error instanceof BaseError && error.details ? error.details : ""
+    );
+    if (error instanceof LLMError) {
+        throw error;
+    }
+    throw new LLMError(`Analyzing memory relation failed: ${error.message}`, {
+        originalError: error,
+        modelName: config.llmModel,
+        prompt: prompt.substring(0, 500) + "...", // Truncate prompt
+    });
+    // The function will now throw instead of returning null directly here.
+    // The caller should handle the error and decide on returning null if appropriate.
   }
 }
 
