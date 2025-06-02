@@ -20,6 +20,7 @@ export interface ChatMessageInput {
   text: string; // 消息的文本内容
   messageId?: string; // (可选) 原始消息的唯一 ID
   timestamp?: number; // (可选) 消息的原始时间戳 (若无则使用处理时的时间)
+  originalSourceContextId?: string; // (可选) 原始来源上下文 ID，用于区分 RAG 上下文和原始上下文
 }
 
 /**
@@ -180,7 +181,11 @@ export async function analyzeMessageForMemory(
       cleanedContent,
     );
     // 重新抛出错误，让调用者知道分析失败
-    throw new Error(`解析 LLM JSON 响应失败: ${parseError.message}`);
+    throw new Error(
+      `解析 LLM JSON 响应失败: ${
+        parseError instanceof Error ? parseError.message : String(parseError)
+      }`,
+    );
   }
 
   // ---- 整理分析结果 ----

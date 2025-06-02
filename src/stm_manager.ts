@@ -2,7 +2,7 @@
 
 import { kvHolder } from "./main.ts";
 import type { ChatMessageInput } from "./memory_processor.ts";
-import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
+import { BaseError, KVStoreError } from "./errors.ts"; // Import custom errors
 import { config } from "./config.ts"; // 1. Import config
 
 export const STM_MAX_MESSAGES = 15; // 短期记忆最大消息数
@@ -73,13 +73,14 @@ export async function getStm(
     );
     return result.value ?? [];
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(
       `❌ [STMManager][错误] 读取 STM 出错 (上下文 ${contextId}):`,
-      error instanceof BaseError ? error.toString() : error.message,
+      error instanceof BaseError ? error.toString() : errorMessage,
       error instanceof BaseError && error.details ? error.details : "",
     );
     throw new KVStoreError(
-      `Failed to get STM for context ${contextId}: ${error.message}`,
+      `Failed to get STM for context ${contextId}: ${errorMessage}`,
       { originalError: error, operation: "get", key: key }, // ensure key is passed in details
     );
   }
@@ -106,7 +107,9 @@ export async function updateStm(
 
   // Else (mode is "kv")
   if (!kvHolder.instance) {
-    console.warn("[STM][日志] KV 未初始化，无法更新 STM。将仅返回新消息和传入的STM（如有）。");
+    console.warn(
+      "[STM][日志] KV 未初始化，无法更新 STM。将仅返回新消息和传入的STM（如有）。",
+    );
     // If KV is not available, we can't persist.
     // We'll return a pruned version of what would have been saved,
     // based on currentTurnStm (if provided) or just the newMessage.
@@ -154,7 +157,9 @@ export async function updateStm(
 
       if (commitResult.ok) {
         success = true;
-        console.log(`[STM][日志] ✅ STM KV 原子更新成功 (上下文 ${contextId})。`);
+        console.log(
+          `[STM][日志] ✅ STM KV 原子更新成功 (上下文 ${contextId})。`,
+        );
       } else {
         console.warn(
           `[STM][日志] ⚠️ STM KV 更新冲突 (上下文 ${contextId})，尝试次数 ${
@@ -174,9 +179,10 @@ export async function updateStm(
     }
     return finalStm;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(
       `❌ [STMManager][错误] STM KV 原子更新出错 (上下文 ${contextId}):`,
-      error instanceof BaseError ? error.toString() : error.message,
+      error instanceof BaseError ? error.toString() : errorMessage,
       error instanceof BaseError && error.details ? error.details : "",
     );
     // In case of error, return a pruned list based on newMessage and currentTurnStm (if available)
@@ -184,10 +190,10 @@ export async function updateStm(
     const fallbackStm = [...(currentTurnStm ?? []), newMessage];
     finalStm = fallbackStm.slice(-STM_MAX_MESSAGES);
     console.warn(
-        `[STM][警告] ⚠️ 因KV操作错误，返回基于传入消息和当前轮次STM（如有）的内存STM。`
+      `[STM][警告] ⚠️ 因KV操作错误，返回基于传入消息和当前轮次STM（如有）的内存STM。`,
     );
     throw new KVStoreError(
-      `STM atomic update error for context ${contextId}: ${error.message}`,
+      `STM atomic update error for context ${contextId}: ${errorMessage}`,
       { originalError: error, operation: "atomic_commit_or_get", key: key }, // ensure key is passed
     );
   }

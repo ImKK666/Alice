@@ -2,7 +2,7 @@
 
 import { kvHolder } from "./main.ts";
 import type { ChatMessageInput } from "./memory_processor.ts"; // Although not directly used in function signatures, it's good for context if these functions were to expand.
-import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
+import { BaseError, KVStoreError } from "./errors.ts"; // Import custom errors
 
 /** 更新活跃用户上下文映射 */
 export function updateActiveUserContexts(
@@ -43,13 +43,14 @@ export async function getLastWanderingTime(
     const result = await kvHolder.instance.get<number>(key);
     return result.value || 0;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(
       `❌ [StateUtils][KV] 获取用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
-      error instanceof BaseError ? error.toString() : error.message,
-      error instanceof BaseError && error.details ? error.details : ""
+      error instanceof BaseError ? error.toString() : errorMessage,
+      error instanceof BaseError && error.details ? error.details : "",
     );
     throw new KVStoreError(
-      `Failed to get last wandering time for user ${userId}, context ${contextId}: ${error.message}`,
+      `Failed to get last wandering time for user ${userId}, context ${contextId}: ${errorMessage}`,
       { originalError: error, operation: "get", key },
     );
   }
@@ -74,13 +75,14 @@ export async function setLastWanderingTime(
       }`,
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(
       `❌ [StateUtils][KV] 设置用户 ${userId} 在上下文 ${contextId} 的上次漫游时间失败:`,
-      error instanceof BaseError ? error.toString() : error.message,
-      error instanceof BaseError && error.details ? error.details : ""
+      error instanceof BaseError ? error.toString() : errorMessage,
+      error instanceof BaseError && error.details ? error.details : "",
     );
     throw new KVStoreError(
-      `Failed to set last wandering time for user ${userId}, context ${contextId}: ${error.message}`,
+      `Failed to set last wandering time for user ${userId}, context ${contextId}: ${errorMessage}`,
       { originalError: error, operation: "set", key },
     );
   }

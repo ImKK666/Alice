@@ -816,6 +816,6 @@ export {
   convertToAppropriateUnit,
   // recordInteraction, // 如果需要记录更复杂的交互数据
   // recordInteractionTimestamp, // 已在定义时导出
-  TemporalContext,
-  TimeMarker,
 };
+
+// 类型已在定义时导出，无需重复导出

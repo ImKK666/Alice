@@ -74,7 +74,7 @@ enum RelationshipStage {
  * 社交情境枚举
  * 不同的社交互动情境
  */
-enum SocialContext {
+export enum SocialContext {
   FORMAL = "formal", // 正式场合
   CASUAL = "casual", // 休闲场合
   COLLABORATIVE = "collaborative", // 协作情境
@@ -380,7 +380,9 @@ export class SocialCognitionManager {
     let state: EnhancedRelationshipState;
 
     try {
-      const result = await kvHolder.instance.get<EnhancedRelationshipState>(key);
+      const result = await kvHolder.instance.get<EnhancedRelationshipState>(
+        key,
+      );
       if (result.value) {
         console.log(
           `   [社交认知][调试] KV 中找到关系状态 v${result.value.version}`,
@@ -477,7 +479,9 @@ export class SocialCognitionManager {
       for (let i = 0; i < 3 && !success; i++) { // 最多重试3次
         // 1. 获取当前状态和版本号
         const currentState = await this.getRelationshipState(entityId, false); // 从KV强制获取最新
-        const currentEntry = await kvHolder.instance.get<EnhancedRelationshipState>(key);
+        const currentEntry = await kvHolder.instance.get<
+          EnhancedRelationshipState
+        >(key);
         const currentVersionstamp = currentEntry.versionstamp; // 获取版本戳
 
         // 2. 合并更新
@@ -1119,18 +1123,6 @@ export function getSocialCognitionManager(): SocialCognitionManager {
   return socialCognitionManagerInstance;
 }
 
-export {
-  EnhancedRelationshipState, // 主要关系状态接口
-  GroupType, // 群组类型枚举
-  InteractionStylePreset, // 互动风格预设枚举
-  MemberRelationship, // 群组成员关系接口
-  RelationshipDimension, // 关系维度枚举
-  RelationshipMilestone, // 关系里程碑接口
-  RelationshipStage, // 关系阶段枚举
-  SharedExperience, // 共享经历接口
-  SocialContext, // 社交情境枚举 (只保留一个)
-  SocialGroup, // 社交群组接口
-  SocialRole, // 社交角色枚举 (只保留一个)
-};
+// 所有导出已在定义时完成，无需重复导出
 
 console.log("✅ [社交认知][日志] 模块已加载 (整合版 - 已修复所有重复导出)");

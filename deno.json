@@ -38,6 +38,7 @@
     "@smithy/eventstream-codec": "npm:/@smithy/eventstream-codec",
     "@smithy/util-utf8": "npm:/@smithy/util-utf8",
     "@aws-sdk/types": "npm:/@aws-sdk/types",
-    "discord.js": "npm:discord.js@^14.15.3"
+    "discord.js": "npm:discord.js@^14.15.3",
+    "telegraf": "npm:telegraf@^4.16.3"
   }
 }

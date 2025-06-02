@@ -4,8 +4,8 @@ import { kvHolder } from "./main.ts";
 import { llm } from "./llm.ts";
 import type { SelfModel } from "./self_concept.ts"; // For type hints
 import { ValueDomain } from "./self_concept.ts"; // Enum import
-import { v4 as uuidv4 } from "https://deno.land/std@0.224.0/uuid/mod.ts";
-import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
+// UUID generation using crypto.randomUUID()
+import { BaseError, KVStoreError, LLMError } from "./errors.ts"; // Import custom errors
 import { config } from "./config.ts"; // Import config for modelName
 
 /**
@@ -47,7 +47,9 @@ export class EthicalEngine {
       );
     }
     if (!llm) { // Assuming llm is a direct import and should be available
-        console.warn("[EthicalEngine] LLM not available. Ethical decision making will be impaired.");
+      console.warn(
+        "[EthicalEngine] LLM not available. Ethical decision making will be impaired.",
+      );
     }
   }
 
@@ -63,9 +65,15 @@ export class EthicalEngine {
     context: string,
     currentValues: SelfModel["values"],
   ): Promise<EthicalDecision> {
-    console.log(`🧠 [EthicalEngine] 开始伦理决策过程: "${query.substring(0, 50)}..."`);
+    console.log(
+      `🧠 [EthicalEngine] 开始伦理决策过程: "${query.substring(0, 50)}..."`,
+    );
 
-    const valueAlignment = this.assessValueAlignment(query, context, currentValues);
+    const valueAlignment = this.assessValueAlignment(
+      query,
+      context,
+      currentValues,
+    );
     const ethicalAnalysis = await this.analyzeFromMultipleFrameworks(
       query,
       context,
@@ -78,7 +86,7 @@ export class EthicalEngine {
       valueAlignment,
     );
 
-    const decisionId = uuidv4.generate();
+    const decisionId = crypto.randomUUID();
     const decision: EthicalDecision = {
       id: decisionId,
       query,
@@ -96,18 +104,23 @@ export class EthicalEngine {
         await kvHolder.instance.set(key, decision);
         console.log(`✨ [EthicalEngine] 完成并存储伦理决策: ${decisionId}`);
       } catch (error) {
+        const errorMessage = error instanceof Error
+          ? error.message
+          : String(error);
         console.error(
-            `❌ [EthicalEngine] 存储伦理决策失败 (key: ${key.join("/")}):`,
-            error instanceof BaseError ? error.toString() : error.message,
-            error instanceof BaseError && error.details ? error.details : ""
+          `❌ [EthicalEngine] 存储伦理决策失败 (key: ${key.join("/")}):`,
+          error instanceof BaseError ? error.toString() : errorMessage,
+          error instanceof BaseError && error.details ? error.details : "",
         );
         throw new KVStoreError( // Throw KVStoreError as per subtask requirement
-          `Failed to set ethical decision ${decisionId}: ${error.message}`,
+          `Failed to set ethical decision ${decisionId}: ${errorMessage}`,
           { originalError: error, operation: "set", key },
         );
       }
     } else {
-        console.warn(`[EthicalEngine] KV not available, decision ${decisionId} not stored.`);
+      console.warn(
+        `[EthicalEngine] KV not available, decision ${decisionId} not stored.`,
+      );
     }
     return decision;
   }
@@ -123,14 +136,35 @@ export class EthicalEngine {
     const alignment: Partial<Record<ValueDomain, number>> = {};
     const domainKeywords: Record<ValueDomain, string[]> = {
       [ValueDomain.TRUTH]: ["真实", "准确", "事实", "真相", "客观", "证据"],
-      [ValueDomain.HELPFULNESS]: ["帮助", "实用", "解决", "辅助", "支持", "协助"],
+      [ValueDomain.HELPFULNESS]: [
+        "帮助",
+        "实用",
+        "解决",
+        "辅助",
+        "支持",
+        "协助",
+      ],
       [ValueDomain.HARMONY]: ["和谐", "平衡", "调和", "融合", "协调", "统一"],
-      [ValueDomain.CREATIVITY]: ["创造", "创新", "想象", "原创", "艺术", "设计"],
+      [ValueDomain.CREATIVITY]: [
+        "创造",
+        "创新",
+        "想象",
+        "原创",
+        "艺术",
+        "设计",
+      ],
       [ValueDomain.WISDOM]: ["智慧", "洞察", "理解", "思考", "判断", "智能"],
       [ValueDomain.GROWTH]: ["成长", "发展", "进步", "学习", "提升", "改进"],
       [ValueDomain.KINDNESS]: ["善良", "友善", "关心", "同情", "爱", "温暖"],
       [ValueDomain.AUTONOMY]: ["自主", "自由", "选择", "独立", "决定", "控制"],
-      [ValueDomain.CONNECTION]: ["连接", "关系", "沟通", "互动", "共鸣", "理解"],
+      [ValueDomain.CONNECTION]: [
+        "连接",
+        "关系",
+        "沟通",
+        "互动",
+        "共鸣",
+        "理解",
+      ],
     };
     const fullText = `${query} ${context}`.toLowerCase();
 
@@ -157,7 +191,9 @@ export class EthicalEngine {
     context: string,
     valueAlignment: Partial<Record<ValueDomain, number>>,
   ): Promise<Partial<Record<EthicalFramework, string>>> {
-    console.log(`🔍 [EthicalEngine] 从多伦理框架分析: "${query.substring(0, 30)}..."`);
+    console.log(
+      `🔍 [EthicalEngine] 从多伦理框架分析: "${query.substring(0, 30)}..."`,
+    );
     const relevantDomains = Object.entries(valueAlignment)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 3)
@@ -191,35 +227,50 @@ export class EthicalEngine {
       const frameworks: Partial<Record<EthicalFramework, string>> = {};
 
       if (analysisText.includes("义务论")) {
-        frameworks[EthicalFramework.DEONTOLOGICAL] = this.extractFrameworkSection(analysisText, "义务论");
+        frameworks[EthicalFramework.DEONTOLOGICAL] = this
+          .extractFrameworkSection(analysisText, "义务论");
       }
       if (analysisText.includes("结果论")) {
-        frameworks[EthicalFramework.CONSEQUENTIALIST] = this.extractFrameworkSection(analysisText, "结果论");
+        frameworks[EthicalFramework.CONSEQUENTIALIST] = this
+          .extractFrameworkSection(analysisText, "结果论");
       }
       if (analysisText.includes("美德伦理")) {
-        frameworks[EthicalFramework.VIRTUE_ETHICS] = this.extractFrameworkSection(analysisText, "美德伦理");
+        frameworks[EthicalFramework.VIRTUE_ETHICS] = this
+          .extractFrameworkSection(analysisText, "美德伦理");
       }
       if (analysisText.includes("关怀伦理")) {
-        frameworks[EthicalFramework.CARE_ETHICS] = this.extractFrameworkSection(analysisText, "关怀伦理");
+        frameworks[EthicalFramework.CARE_ETHICS] = this.extractFrameworkSection(
+          analysisText,
+          "关怀伦理",
+        );
       }
       if (analysisText.includes("实用主义")) {
-        frameworks[EthicalFramework.PRAGMATIC] = this.extractFrameworkSection(analysisText, "实用主义");
+        frameworks[EthicalFramework.PRAGMATIC] = this.extractFrameworkSection(
+          analysisText,
+          "实用主义",
+        );
       }
       return frameworks;
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
         `❌ [EthicalEngine] 进行伦理框架分析时LLM调用失败:`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
       );
       if (error instanceof LLMError) {
         throw error;
       }
-      throw new LLMError(`Ethical framework analysis failed: ${error.message}`, {
-        originalError: error,
-        modelName: config.llmModel,
-        prompt: prompt.substring(0, 500) + "...",
-      });
+      throw new LLMError(
+        `Ethical framework analysis failed: ${errorMessage}`,
+        {
+          originalError: error,
+          modelName: config.llmModel,
+          prompt: String(prompt).substring(0, 500) + "...",
+        },
+      );
     }
   }
 
@@ -229,7 +280,7 @@ export class EthicalEngine {
   private extractFrameworkSection(text: string, frameworkName: string): string {
     const lines = text.split("\n");
     let inSection = false;
-    let sectionContent = [];
+    const sectionContent = [];
     for (const line of lines) {
       if (line.includes(frameworkName)) {
         inSection = true;
@@ -282,25 +333,36 @@ ${frameworksDescription}
 请以连贯段落形式表达，不要使用标题或编号。`;
 
       const response = await llm.invoke(prompt);
-      const synthesisText = response.content as string;
+      const synthesisText = typeof response.content === "string"
+        ? response.content
+        : String(response.content);
       const decisionEnd = synthesisText.indexOf("。") + 1;
-      const decision = synthesisText.substring(0, decisionEnd || synthesisText.length).trim(); // Ensure decision has content
+      const decision = synthesisText.substring(
+        0,
+        decisionEnd || synthesisText.length,
+      ).trim(); // Ensure decision has content
       const reasoning = synthesisText.substring(decisionEnd).trim();
       return { decision, reasoning };
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
         `❌ [EthicalEngine] 综合伦理决策时LLM调用失败:`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
-        );
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
+      );
       if (error instanceof LLMError) {
         throw error;
       }
-      throw new LLMError(`Synthesizing ethical decision failed: ${error.message}`, {
-        originalError: error,
-        modelName: config.llmModel,
-        prompt: prompt.substring(0, 500) + "...",
-      });
+      throw new LLMError(
+        `Synthesizing ethical decision failed: ${errorMessage}`,
+        {
+          originalError: error,
+          modelName: config.llmModel,
+          prompt: String(prompt).substring(0, 500) + "...",
+        },
+      );
     }
   }
 }

@@ -2,8 +2,8 @@
 
 import { kvHolder } from "./main.ts";
 import type { ValueDomain } from "./self_concept.ts"; // ValueDomain is used by AutobiographicalEvent
-import { v4 as uuidv4 } from "https://deno.land/std@0.224.0/uuid/mod.ts";
-import { KVStoreError, BaseError } from "./errors.ts"; // Import custom errors
+// UUID generation using crypto.randomUUID()
+import { BaseError, KVStoreError } from "./errors.ts"; // Import custom errors
 
 /**
  * 自传式事件接口
@@ -54,7 +54,7 @@ export class AutobiographyManager {
       return null;
     }
 
-    const eventId = uuidv4.generate();
+    const eventId = crypto.randomUUID();
     const now = Date.now();
 
     const event: AutobiographicalEvent = {
@@ -76,13 +76,18 @@ export class AutobiographyManager {
       return event;
     } catch (error) {
       const key = ["autobiographical_event", eventId];
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
-        `❌ [AutobiographyManager] Failed to record event in KV (key: ${key.join("/")}):`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
+        `❌ [AutobiographyManager] Failed to record event in KV (key: ${
+          key.join("/")
+        }):`,
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
       );
       throw new KVStoreError(
-        `Failed to set autobiographical event ${eventId}: ${error.message}`,
+        `Failed to set autobiographical event ${eventId}: ${errorMessage}`,
         { originalError: error, operation: "set", key },
       );
     }
@@ -108,13 +113,18 @@ export class AutobiographyManager {
       return entry.value;
     } catch (error) {
       const key = ["autobiographical_event", id];
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
-        `❌ [AutobiographyManager] Failed to get event ${id} from KV (key: ${key.join("/")}):`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
+        `❌ [AutobiographyManager] Failed to get event ${id} from KV (key: ${
+          key.join("/")
+        }):`,
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
       );
       throw new KVStoreError(
-        `Failed to get autobiographical event ${id}: ${error.message}`,
+        `Failed to get autobiographical event ${id}: ${errorMessage}`,
         { originalError: error, operation: "get", key },
       );
     }

@@ -38,6 +38,7 @@ export type MemoryType =
   | "joke_or_banter"
   | "reflection"
   | "emotional_response" // 新增的情感记忆类型
+  | "question" // 新增的问题类型
   | "unknown";
 
 /**
@@ -68,6 +69,15 @@ export interface MemoryPayload {
   text_content: string; // 记忆的核心文本内容
   importance_score?: number; // (可选) 重要性评分 (例如 1-5)
   related_ids?: string[]; // (可选) 关联的其他记忆 Point ID
+
+  // 兼容性属性 - 为了支持现有代码
+  text?: string; // 别名，指向 text_content
+  metadata?: {
+    id?: string;
+    type?: MemoryType;
+    timestamp?: number;
+    [key: string]: string | number | boolean | null | undefined;
+  };
 
   // --- 情感维度 ---
   emotional_valence?: number; // 情感效价: -1.0(极负面)到1.0(极正面)
@@ -116,8 +126,11 @@ export async function ensureCollectionExists(
   try {
     await qdrantClient.getCollection(collectionName);
     console.log(`✅ 集合 "${collectionName}" 已存在，无需创建。`);
-  } catch (error: any) {
-    const status = error?.status ?? error?.response?.status;
+  } catch (error: unknown) {
+    const status =
+      (error as { status?: number; response?: { status?: number } })?.status ??
+        (error as { status?: number; response?: { status?: number } })?.response
+          ?.status;
     const errorString = String(error);
     if (
       status === 404 || errorString.includes("Not found") ||
@@ -151,11 +164,34 @@ export async function ensureCollectionExists(
         throw createError;
       }
     } else {
-      console.error(
-        `❌ 检查集合 "${collectionName}" 时遇到预期之外的错误:`,
-        error,
-      );
-      throw error;
+      // 检查是否是连接错误
+      if (
+        status === 502 || status === 503 ||
+        errorString.includes("Bad Gateway") ||
+        errorString.includes("Connection refused") ||
+        errorString.includes("ECONNREFUSED")
+      ) {
+        console.error(`❌ 无法连接到 Qdrant 服务 (${config.qdrantUrl})`);
+        console.error(`   错误详情: ${errorString}`);
+        console.error(`   请确保 Qdrant 服务正在运行。您可以：`);
+        console.error(
+          `   1. 使用 Docker 启动: docker run -p 6333:6333 qdrant/qdrant`,
+        );
+        console.error(`   2. 或运行项目根目录下的 start-qdrant.bat`);
+        console.error(
+          `   3. 检查配置文件中的 QDRANT_URL 设置: ${config.qdrantUrl}`,
+        );
+        console.error(
+          `   4. 访问 http://localhost:6333/dashboard 检查 Qdrant 状态`,
+        );
+        throw new Error(`Qdrant 服务连接失败: ${errorString}`);
+      } else {
+        console.error(
+          `❌ 检查集合 "${collectionName}" 时遇到预期之外的错误:`,
+          error,
+        );
+        throw error;
+      }
     }
   }
 }
@@ -188,29 +224,77 @@ export async function upsertMemoryPoints(
   }
 }
 
-// 保持原有 searchMemories 函数不变
+// 重载版本：支持查询对象参数
+export async function searchMemories(
+  params: {
+    query: string;
+    limit?: number;
+    filter?: Schemas["Filter"];
+    collectionName?: string;
+  },
+): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>>;
+
+// 原始版本：保持向后兼容
 export async function searchMemories(
   collectionName: string,
   vector: number[],
   limit: number,
   filter?: Schemas["Filter"],
+): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>>;
+
+// 实现
+export async function searchMemories(
+  collectionNameOrParams: string | {
+    query: string;
+    limit?: number;
+    filter?: Schemas["Filter"];
+    collectionName?: string;
+  },
+  vector?: number[],
+  limit?: number,
+  filter?: Schemas["Filter"],
 ): Promise<Array<Schemas["ScoredPoint"] & { payload: MemoryPayload }>> {
-  // 原有实现不变
+  // 处理参数重载
+  let actualCollectionName: string;
+  let actualVector: number[];
+  let actualLimit: number;
+  let actualFilter: Schemas["Filter"] | undefined;
+
+  if (typeof collectionNameOrParams === "string") {
+    // 原始调用方式
+    actualCollectionName = collectionNameOrParams;
+    actualVector = vector!;
+    actualLimit = limit!;
+    actualFilter = filter;
+  } else {
+    // 新的对象参数调用方式
+    const params = collectionNameOrParams;
+    actualCollectionName = params.collectionName || config.qdrantCollectionName;
+    actualLimit = params.limit || 10;
+    actualFilter = params.filter;
+
+    // 对于查询字符串，我们需要生成向量
+    // 这里暂时抛出错误，因为需要 embeddings 模块
+    throw new Error(
+      "Query-based search requires embeddings integration. Use vector-based search instead.",
+    );
+  }
+
   try {
-    const searchResult = await qdrantClient.search(collectionName, {
-      vector: vector,
-      limit: limit,
-      filter: filter,
+    const searchResult = await qdrantClient.search(actualCollectionName, {
+      vector: actualVector,
+      limit: actualLimit,
+      filter: actualFilter,
       with_payload: true,
     });
     console.log(
-      `🔍 在集合 "${collectionName}" 中搜索完成。找到 ${searchResult.length} 个结果。`,
+      `🔍 在集合 "${actualCollectionName}" 中搜索完成。找到 ${searchResult.length} 个结果。`,
     );
     return searchResult as Array<
       Schemas["ScoredPoint"] & { payload: MemoryPayload }
     >;
   } catch (error) {
-    console.error(`❌ 在集合 "${collectionName}" 中搜索时出错:`, error);
+    console.error(`❌ 在集合 "${actualCollectionName}" 中搜索时出错:`, error);
     throw error;
   }
 }

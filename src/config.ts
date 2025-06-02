@@ -143,6 +143,21 @@ export const config = {
     "DISCORD_PROCESSING_THRESHOLD",
     0.6,
   ), // 频道消息处理分数阈值 (0.0-1.0)
+
+  // --- Telegram Bot 配置 ---
+  telegramBotToken: getOptionalStringEnv("TELEGRAM_BOT_TOKEN"), // Telegram Bot 令牌
+  telegramOwnerId: getOptionalStringEnv("TELEGRAM_OWNER_ID"), // Telegram 主人的用户 ID
+  telegramOwnerGreeting: getStringEnv("TELEGRAM_OWNER_GREETING", "主人"), // 对主人的称呼
+  telegramProcessingThreshold: parseFloatEnv(
+    "TELEGRAM_PROCESSING_THRESHOLD",
+    0.6,
+  ), // 群组消息处理分数阈值 (0.0-1.0)
+  telegramAlwaysReplyToOwner: parseBoolEnv(
+    "TELEGRAM_ALWAYS_REPLY_TO_OWNER",
+    true,
+  ), // 是否总是回复主人的消息
+
+  // --- 通用 Bot 配置 ---
   ownerNicknames: parseStringArrayEnv("OWNER_NICKNAMES", []), // 主人的昵称列表 (逗号分隔)
   botNames: parseStringArrayEnv("BOT_NAMES", ["爱丽丝", "Alice"]), // 机器人会响应的名字列表 (逗号分隔)
   importantKeywords: parseStringArrayEnv("IMPORTANT_KEYWORDS", [

@@ -685,8 +685,12 @@ export async function schedulePeriodicMindWandering(
 
             const recentTopics = extractRecentTopics(stmHistory);
             let emotionalState = { valence: 0, arousal: 0.1 }; // 默认平静状态
-            if (kv) { // 仅当 KV 可用时尝试获取身体状态
-              const bodyState = await getBodyState(userId, ragContextId, kv);
+            if (kv.instance) { // 仅当 KV 可用时尝试获取身体状态
+              const bodyState = await getBodyState(
+                userId,
+                ragContextId,
+                kv.instance,
+              );
               if (bodyState) {
                 emotionalState = {
                   valence: (bodyState.comfort_level - 0.5) * 2,
@@ -765,5 +769,4 @@ export async function schedulePeriodicMindWandering(
   );
 }
 
-// 导出辅助函数及类型
-export { Insight, InsightCollection, InsightType, WanderingContext };
+// 类型已在定义时导出，无需重复导出

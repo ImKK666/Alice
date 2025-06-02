@@ -38,9 +38,9 @@ export class SelfExpressionEngine {
 
       const aspirationsText = allAspirations
         .map((a) =>
-          `- ${a.details.substring(0, 100)}... (进度: ${ // Assuming 'details' from SelfAspiration in aspirations_manager.ts
-            (a.progress * 100).toFixed(1)
-          }%)`
+          `- ${a.details.substring(0, 100)}... (进度: ${
+            // Assuming 'details' from SelfAspiration in aspirations_manager.ts
+            (a.progress * 100).toFixed(1)}%)`
         )
         .join("\n");
 
@@ -73,18 +73,21 @@ ${aspirationsText || "我还没有明确的愿景。"}
       );
       return narrative;
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
         `❌ [SelfExpressionEngine] 生成自我叙事时LLM调用失败:`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
       );
       if (error instanceof LLMError) {
         throw error;
       }
-      throw new LLMError(`Generating self-narrative failed: ${error.message}`, {
+      throw new LLMError(`Generating self-narrative failed: ${errorMessage}`, {
         originalError: error,
         modelName: config.llmModel,
-        prompt: prompt.substring(0, 500) + "...",
+        prompt: String(prompt).substring(0, 500) + "...",
       });
     }
   }
@@ -131,26 +134,34 @@ ${aspirationsText || "我还没有明确的愿景。"}
 指南应简洁明了，总长度约200-250字，提供具体的建议而非抽象描述。`;
 
       const response = await llm.invoke(prompt);
-      const styleGuide = response.content as string;
+      const styleGuide = typeof response.content === "string"
+        ? response.content
+        : String(response.content);
 
       console.log(
         `✨ [SelfExpressionEngine] 生成表达风格指南完成，长度: ${styleGuide.length}字符`,
       );
       return styleGuide;
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
       console.error(
         `❌ [SelfExpressionEngine] 生成表达风格指南时LLM调用失败:`,
-        error instanceof BaseError ? error.toString() : error.message,
-        error instanceof BaseError && error.details ? error.details : ""
+        error instanceof BaseError ? error.toString() : errorMessage,
+        error instanceof BaseError && error.details ? error.details : "",
       );
       if (error instanceof LLMError) {
         throw error;
       }
-      throw new LLMError(`Generating expression style guide failed: ${error.message}`, {
-        originalError: error,
-        modelName: config.llmModel,
-        prompt: prompt.substring(0, 500) + "...",
-      });
+      throw new LLMError(
+        `Generating expression style guide failed: ${errorMessage}`,
+        {
+          originalError: error,
+          modelName: config.llmModel,
+          prompt: String(prompt).substring(0, 500) + "...",
+        },
+      );
     }
   }
 }
