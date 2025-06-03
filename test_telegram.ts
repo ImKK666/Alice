@@ -126,6 +126,65 @@ try {
     );
   }
 
+  // 6. 新增工具系统检查
+  console.log("\n🔧 6. 新增工具系统检查...");
+  try {
+    const { configValidator } = await import("./src/utils/config-validator.ts");
+    console.log("   - 配置验证器: ✅ 可用");
+
+    const validationResult = configValidator.validate();
+    console.log(
+      `   - 配置验证结果: ${
+        validationResult.isValid ? "✅ 通过" : "⚠️ 有问题"
+      }`,
+    );
+    if (!validationResult.isValid) {
+      console.log(`   - 错误数量: ${validationResult.errors.length}`);
+      console.log(`   - 警告数量: ${validationResult.warnings.length}`);
+    }
+  } catch (error) {
+    console.error("   - 配置验证器: ❌ 不可用");
+    console.error(
+      `   - 错误信息: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  try {
+    const { Logger } = await import("./src/utils/logger.ts");
+    console.log("   - 日志系统: ✅ 可用");
+
+    const logger = Logger.getInstance();
+    logger.info("TestModule", "测试日志系统");
+    console.log("   - 日志记录: ✅ 正常");
+  } catch (error) {
+    console.error("   - 日志系统: ❌ 不可用");
+    console.error(
+      `   - 错误信息: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  try {
+    const { PerformanceMonitor } = await import("./src/utils/performance.ts");
+    console.log("   - 性能监控: ✅ 可用");
+
+    const monitor = PerformanceMonitor.getInstance();
+    monitor.startOperation("test_op", "测试操作");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    monitor.endOperation("test_op", "测试操作");
+    console.log("   - 性能监控: ✅ 正常");
+  } catch (error) {
+    console.error("   - 性能监控: ❌ 不可用");
+    console.error(
+      `   - 错误信息: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
   console.log("\n✅ 测试完成！");
   console.log("\n🚀 启动建议：");
   console.log(

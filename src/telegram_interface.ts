@@ -8,22 +8,29 @@
 
 import { Context, Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
-import process from "node:process";
 import { config } from "./config.ts";
 import type { ChatMessageInput } from "./memory_processor.ts";
 import {
   analyzeMessageForMemory,
   type MessageAnalysisResult,
 } from "./memory_processor.ts";
-import { handleIncomingMessage } from "./main.ts";
+import { handleIncomingMessage } from "./message_handler.ts";
+import { createModuleLogger } from "./utils/logger.ts";
+import { PerformanceMonitor } from "./utils/performance.ts";
+import { BaseError } from "./errors.ts";
 
 // --- 1. 定义 Telegram 客户端 ---
 let telegramBot: Telegraf | null = null;
+let isShuttingDown = false;
 
 // 状态管理: { chatId (string): lastRAGContextId (string) }
 const chatContextMap = new Map<string, string>();
 const DEFAULT_CONTEXT_PREFIX_CHAT = "telegram_chat_";
 const DEFAULT_CONTEXT_PREFIX_PRIVATE = "telegram_private_";
+
+// 日志和性能监控
+const telegramLogger = createModuleLogger("Telegram");
+const performanceMonitor = PerformanceMonitor.getInstance();
 
 // --- 2. 初始化 Telegram 客户端 ---
 /**
@@ -216,216 +223,407 @@ function calculateMessageImportanceScore(
  * 启动 Telegram Bot 接口
  */
 export async function startTelegram(): Promise<void> {
-  // --- 配置验证 ---
-  if (!config.telegramBotToken) {
-    console.error(
-      "❌ 错误：TELEGRAM_BOT_TOKEN 未设置。无法启动 Telegram 接口。",
-    );
-    Deno.exit(1);
-  }
-  if (!config.telegramOwnerId) {
-    console.warn(
-      "⚠️ 警告：TELEGRAM_OWNER_ID 未设置，部分功能（如主人识别）可能受影响。",
-    );
-  }
+  const operationId = `telegram_start_${Date.now()}`;
+  performanceMonitor.startOperation(operationId, "Telegram启动", "Bot初始化");
 
-  const processingThreshold = config.telegramProcessingThreshold ?? 0.35;
-  console.log(
-    `[Telegram] LLM 分析评分模式已启用。处理阈值: ${processingThreshold}`,
-  );
+  try {
+    // --- 配置验证 ---
+    telegramLogger.info("开始启动 Telegram Bot");
 
-  // --- 初始化 Telegraf Bot ---
-  const bot = new Telegraf(config.telegramBotToken);
-
-  // --- 初始化全局客户端 ---
-  initializeTelegramBot(bot);
-
-  // --- 事件处理 ---
-
-  // 启动事件
-  await bot.launch();
-  console.log(`✅ Telegram Bot 已成功连接并准备就绪！`);
-  console.log(`   - 配置的主人 ID: ${config.telegramOwnerId || "未设置"}`);
-  console.log(`   - 消息处理分数阈值: ${processingThreshold}`);
-  console.log("👂 正在监听消息...");
-  console.log("----------------------------------------------");
-
-  // 消息处理
-  bot.on(message("text"), async (ctx) => {
-    // --- 1. 过滤 ---
-    if (ctx.from?.is_bot) return; // 忽略机器人消息
-
-    const userId = ctx.from?.id?.toString() || "";
-    const chatId = ctx.chat?.id?.toString() || "";
-    const isPrivate = ctx.chat?.type === "private";
-    const text = ctx.message.text || "";
-
-    // --- 2. 决定是否处理 ---
-    let shouldProcess = false;
-    let processingReason = "默认忽略";
-    let llmAnalysisResult: MessageAnalysisResult | null = null;
-
-    const analysisInput: ChatMessageInput = {
-      userId: userId,
-      contextId: isPrivate
-        ? `${DEFAULT_CONTEXT_PREFIX_PRIVATE}${userId}`
-        : `${DEFAULT_CONTEXT_PREFIX_CHAT}${chatId}`,
-      text: text,
-      messageId: ctx.message.message_id.toString(),
-      timestamp: ctx.message.date * 1000, // Telegram 使用秒，转换为毫秒
-    };
-
-    const sourceContextId = analysisInput.contextId;
-
-    // 执行 LLM 分析
-    try {
-      console.log(
-        `[Telegram][分析尝试] 用户 ${userId} 在 ${
-          isPrivate ? "私聊" : "群组 " + chatId
-        }...`,
+    if (!config.telegramBotToken) {
+      const error = new BaseError(
+        "TELEGRAM_BOT_TOKEN 未设置",
+        { module: "telegram" },
+        "critical",
       );
-      llmAnalysisResult = await analyzeMessageForMemory(analysisInput);
-    } catch (err) {
-      console.error(
-        `[Telegram][分析] 分析消息失败 (用户 ${userId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      telegramLogger.critical("配置错误", error);
+      throw error;
     }
 
-    // 判断是否处理
-    if (isPrivate) {
-      shouldProcess = true;
-      processingReason = "私聊消息";
-    } else if (
-      config.telegramAlwaysReplyToOwner && config.telegramOwnerId &&
-      userId === config.telegramOwnerId
-    ) {
-      shouldProcess = true;
-      processingReason = "主人消息 (强制回复)";
-    } else {
-      // 群组普通消息：根据 LLM 分析结果打分
-      console.log(
-        `[Telegram] 群组 ${chatId} 消息来自普通用户，使用 LLM 分析结果计算权重...`,
-      );
-      const messageScore = calculateMessageImportanceScore(
-        ctx,
-        llmAnalysisResult,
-      );
+    if (!config.telegramOwnerId) {
+      telegramLogger.warn("TELEGRAM_OWNER_ID 未设置，部分功能可能受影响");
+    }
 
-      if (messageScore >= processingThreshold) {
-        shouldProcess = true;
-        processingReason = `LLM分析分数 (${
-          messageScore.toFixed(3)
-        }) >= 阈值 (${processingThreshold})`;
-      } else {
-        processingReason = `LLM分析分数 (${
-          messageScore.toFixed(3)
-        }) < 阈值 (${processingThreshold})`;
-        console.log(
-          `[Telegram] 忽略消息 (原因: ${processingReason}): 用户 ${userId} 在群组 ${chatId}`,
-        );
-        return;
+    const processingThreshold = config.telegramProcessingThreshold ?? 0.35;
+    console.log(
+      `[Telegram] LLM 分析评分模式已启用。处理阈值: ${processingThreshold}`,
+    );
+
+    // --- 初始化 Telegraf Bot ---
+    const bot = new Telegraf(config.telegramBotToken);
+
+    // --- 初始化全局客户端 ---
+    initializeTelegramBot(bot);
+
+    // --- 事件处理 ---
+    console.log(`[Telegram][调试] 🔧 设置事件监听器...`);
+
+    // 消息处理 - 必须在 launch() 之前设置！
+    bot.on(message("text"), async (ctx) => {
+      // --- 1. 过滤 ---
+      if (ctx.from?.is_bot) {
+        console.log("[Telegram][调试] 忽略机器人消息");
+        return; // 忽略机器人消息
       }
-    }
 
-    // --- 3. 处理消息 ---
-    if (shouldProcess) {
+      const userId = ctx.from?.id?.toString() || "";
+      const chatId = ctx.chat?.id?.toString() || "";
+      const isPrivate = ctx.chat?.type === "private";
+      const text = ctx.message.text || "";
+      const username = ctx.from?.username || "未知用户";
+      const firstName = ctx.from?.first_name || "";
+
+      console.log("=".repeat(60));
+      console.log(`[Telegram][调试] 📨 收到新消息`);
+      console.log(`  用户ID: ${userId}`);
+      console.log(`  用户名: ${username}`);
+      console.log(`  姓名: ${firstName}`);
+      console.log(`  聊天ID: ${chatId}`);
+      console.log(`  聊天类型: ${ctx.chat?.type}`);
+      console.log(`  是否私聊: ${isPrivate}`);
+      console.log(`  消息长度: ${text.length}`);
       console.log(
-        `[Telegram] 处理消息 (原因: ${processingReason}): 用户 ${userId}(${
-          ctx.from?.username || ctx.from?.first_name
-        }) 在 ${isPrivate ? "私聊" : `群组 ${chatId}`}`,
+        `  消息内容: "${text.substring(0, 100)}${
+          text.length > 100 ? "..." : ""
+        }"`,
       );
-      const processStartTime = Date.now();
+      console.log(`  消息ID: ${ctx.message.message_id}`);
+      console.log(
+        `  时间戳: ${new Date(ctx.message.date * 1000).toLocaleString()}`,
+      );
+
+      // --- 2. 决定是否处理 ---
+      let shouldProcess = false;
+      let processingReason = "默认忽略";
+      let llmAnalysisResult: MessageAnalysisResult | null = null;
+
+      const analysisInput: ChatMessageInput = {
+        userId: userId,
+        contextId: isPrivate
+          ? `${DEFAULT_CONTEXT_PREFIX_PRIVATE}${userId}`
+          : `${DEFAULT_CONTEXT_PREFIX_CHAT}${chatId}`,
+        text: text,
+        messageId: ctx.message.message_id.toString(),
+        timestamp: ctx.message.date * 1000, // Telegram 使用秒，转换为毫秒
+      };
+
+      const sourceContextId = analysisInput.contextId;
+
+      // 执行 LLM 分析
+      console.log(`[Telegram][调试] 🧠 开始 LLM 消息分析...`);
+      const analysisOperationId = `telegram_analysis_${Date.now()}_${userId}`;
+      performanceMonitor.startOperation(
+        analysisOperationId,
+        "消息分析",
+        `用户${userId}`,
+      );
 
       try {
-        // 发送"正在输入"状态
-        await ctx.sendChatAction("typing");
+        telegramLogger.info(
+          `开始分析消息`,
+          { userId, chatId, isPrivate, textLength: text.length },
+          userId,
+        );
+        console.log(`[Telegram][调试] 调用 analyzeMessageForMemory...`);
+        llmAnalysisResult = await analyzeMessageForMemory(analysisInput);
+        console.log(`[Telegram][调试] ✅ LLM 分析完成:`, {
+          memory_type: llmAnalysisResult?.memory_type,
+          importance_score: llmAnalysisResult?.importance_score,
+          emotional_arousal: llmAnalysisResult?.emotional_arousal,
+        });
+        performanceMonitor.endOperation(
+          analysisOperationId,
+          "消息分析",
+          `用户${userId}`,
+        );
+      } catch (err) {
+        console.log(`[Telegram][调试] ❌ LLM 分析失败:`, err);
+        performanceMonitor.endOperation(
+          analysisOperationId,
+          "消息分析",
+          `用户${userId}`,
+        );
+        telegramLogger.error(
+          "消息分析失败",
+          err instanceof Error ? err : undefined,
+          { userId, chatId, textLength: text.length },
+          userId,
+        );
+      }
 
-        // 确定 RAG 上下文
-        const currentRAGContextId = chatContextMap.get(sourceContextId) ||
-          sourceContextId;
+      // 判断是否处理
+      console.log(`[Telegram][调试] 🤔 决定是否处理消息...`);
+      console.log(`  配置的主人ID: ${config.telegramOwnerId || "未设置"}`);
+      console.log(`  总是回复主人: ${config.telegramAlwaysReplyToOwner}`);
+      console.log(`  处理阈值: ${processingThreshold}`);
 
+      if (isPrivate) {
+        shouldProcess = true;
+        processingReason = "私聊消息";
+        console.log(`[Telegram][调试] ✅ 决定处理: ${processingReason}`);
+      } else if (
+        config.telegramAlwaysReplyToOwner && config.telegramOwnerId &&
+        userId === config.telegramOwnerId
+      ) {
+        shouldProcess = true;
+        processingReason = "主人消息 (强制回复)";
+        console.log(`[Telegram][调试] ✅ 决定处理: ${processingReason}`);
+      } else {
+        // 群组普通消息：根据 LLM 分析结果打分
         console.log(
-          `[Telegram][${sourceContextId}]->[RAG] 开始处理 (当前 RAG 上下文: ${currentRAGContextId})`,
+          `[Telegram][调试] 群组 ${chatId} 消息来自普通用户，使用 LLM 分析结果计算权重...`,
+        );
+        const messageScore = calculateMessageImportanceScore(
+          ctx,
+          llmAnalysisResult,
         );
 
-        // 调用核心 RAG 逻辑
-        const result = await handleIncomingMessage(
-          analysisInput,
-          currentRAGContextId,
-          "telegram",
-        );
-
-        // 更新 RAG 上下文映射
-        if (result.newContextId !== currentRAGContextId) {
-          console.log(
-            `[调试 Telegram] 来源 ${sourceContextId}: RAG 上下文已更新为: ${result.newContextId}`,
-          );
-          chatContextMap.set(sourceContextId, result.newContextId);
+        if (messageScore >= processingThreshold) {
+          shouldProcess = true;
+          processingReason = `LLM分析分数 (${
+            messageScore.toFixed(3)
+          }) >= 阈值 (${processingThreshold})`;
+          console.log(`[Telegram][调试] ✅ 决定处理: ${processingReason}`);
         } else {
-          if (!chatContextMap.has(sourceContextId)) {
-            chatContextMap.set(sourceContextId, currentRAGContextId);
-          }
-        }
-
-        // 发送回复
-        const finalResponse = result.responseText;
-        if (finalResponse && finalResponse.trim().length > 0) {
-          const messageParts = splitMessage(finalResponse);
-          for (const part of messageParts) {
-            if (part.trim().length === 0) continue;
-            try {
-              await ctx.reply(part);
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            } catch (sendError) {
-              console.error(
-                `[Telegram][${sourceContextId}] 发送消息失败:`,
-                sendError,
-              );
-              break;
-            }
-          }
-        } else {
+          processingReason = `LLM分析分数 (${
+            messageScore.toFixed(3)
+          }) < 阈值 (${processingThreshold})`;
+          console.log(`[Telegram][调试] ❌ 决定忽略: ${processingReason}`);
           console.log(
-            `[Telegram][${sourceContextId}] RAG 返回了空响应，不发送消息。`,
+            `[Telegram] 忽略消息 (原因: ${processingReason}): 用户 ${userId} 在群组 ${chatId}`,
           );
-        }
-
-        const processEndTime = Date.now();
-        console.log(
-          `[Telegram][${sourceContextId}]<-[RAG] 消息处理完成。(耗时: ${
-            (processEndTime - processStartTime) / 1000
-          } 秒)`,
-        );
-      } catch (error) {
-        const processEndTime = Date.now();
-        console.error(
-          `[Telegram][${sourceContextId}] 处理消息或回复时出错 (耗时: ${
-            (processEndTime - processStartTime) / 1000
-          } 秒):`,
-          error,
-        );
-        try {
-          await ctx.reply("抱歉，我在处理你的消息时好像遇到了一点小麻烦... 🤯");
-        } catch (sendError) {
-          console.error(
-            `[Telegram][${sourceContextId}] 发送错误提示消息也失败了:`,
-            sendError,
-          );
+          return;
         }
       }
+
+      // --- 3. 处理消息 ---
+      if (shouldProcess) {
+        console.log(`[Telegram][调试] 🚀 开始处理消息...`);
+        const messageOperationId = `telegram_message_${Date.now()}_${userId}`;
+        performanceMonitor.startOperation(
+          messageOperationId,
+          "消息处理",
+          `用户${userId}`,
+        );
+
+        telegramLogger.info(
+          `开始处理消息`,
+          {
+            userId,
+            chatId,
+            isPrivate,
+            processingReason,
+            username: ctx.from?.username,
+            firstName: ctx.from?.first_name,
+          },
+          userId,
+        );
+        const processStartTime = Date.now();
+
+        try {
+          // 发送"正在输入"状态
+          console.log(`[Telegram][调试] 📝 发送"正在输入"状态...`);
+          await ctx.sendChatAction("typing");
+
+          // 确定 RAG 上下文
+          const currentRAGContextId = chatContextMap.get(sourceContextId) ||
+            sourceContextId;
+
+          console.log(`[Telegram][调试] 🧠 准备调用核心 RAG 逻辑:`);
+          console.log(`  源上下文ID: ${sourceContextId}`);
+          console.log(`  当前RAG上下文ID: ${currentRAGContextId}`);
+          console.log(`  平台: telegram`);
+
+          // 调用核心 RAG 逻辑
+          console.log(`[Telegram][调试] 🔄 调用 handleIncomingMessage...`);
+          const result = await handleIncomingMessage(
+            analysisInput,
+            currentRAGContextId,
+            "telegram",
+          );
+          console.log(`[Telegram][调试] ✅ handleIncomingMessage 完成:`, {
+            newContextId: result.newContextId,
+            responseLength: result.responseText?.length || 0,
+            hasResponse: !!result.responseText?.trim(),
+          });
+
+          // 更新 RAG 上下文映射
+          if (result.newContextId !== currentRAGContextId) {
+            console.log(
+              `[Telegram][调试] 🔄 RAG 上下文已更新: ${sourceContextId} -> ${result.newContextId}`,
+            );
+            chatContextMap.set(sourceContextId, result.newContextId);
+          } else {
+            if (!chatContextMap.has(sourceContextId)) {
+              chatContextMap.set(sourceContextId, currentRAGContextId);
+            }
+          }
+
+          // 发送回复
+          const finalResponse = result.responseText;
+          console.log(`[Telegram][调试] 📤 准备发送回复:`);
+          console.log(`  回复长度: ${finalResponse?.length || 0}`);
+          console.log(
+            `  有效回复: ${!!(finalResponse &&
+              finalResponse.trim().length > 0)}`,
+          );
+
+          if (finalResponse && finalResponse.trim().length > 0) {
+            const messageParts = splitMessage(finalResponse);
+            console.log(
+              `[Telegram][调试] 📝 分割为 ${messageParts.length} 个部分`,
+            );
+
+            for (let i = 0; i < messageParts.length; i++) {
+              const part = messageParts[i];
+              if (part.trim().length === 0) continue;
+
+              try {
+                console.log(
+                  `[Telegram][调试] 📨 发送第 ${
+                    i + 1
+                  }/${messageParts.length} 部分 (${part.length} 字符)...`,
+                );
+                await ctx.reply(part);
+                console.log(`[Telegram][调试] ✅ 第 ${i + 1} 部分发送成功`);
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              } catch (sendError) {
+                console.error(
+                  `[Telegram][调试] ❌ 发送第 ${i + 1} 部分失败:`,
+                  sendError,
+                );
+                break;
+              }
+            }
+            console.log(`[Telegram][调试] 🎉 所有回复部分发送完成`);
+          } else {
+            console.log(
+              `[Telegram][调试] ⚠️ RAG 返回了空响应，不发送消息。`,
+            );
+          }
+
+          const processEndTime = Date.now();
+          const duration = (processEndTime - processStartTime) / 1000;
+
+          performanceMonitor.endOperation(
+            messageOperationId,
+            "消息处理",
+            `用户${userId}`,
+          );
+          telegramLogger.performance(
+            "消息处理完成",
+            duration * 1000,
+            undefined,
+            { sourceContextId, userId },
+            userId,
+          );
+        } catch (error) {
+          const processEndTime = Date.now();
+          const duration = (processEndTime - processStartTime) / 1000;
+
+          performanceMonitor.endOperation(
+            messageOperationId,
+            "消息处理",
+            `用户${userId}`,
+          );
+          telegramLogger.error(
+            "消息处理失败",
+            error instanceof Error ? error : undefined,
+            { sourceContextId, userId, duration },
+            userId,
+          );
+
+          try {
+            await ctx.reply(
+              "抱歉，我在处理你的消息时好像遇到了一点小麻烦... 🤯",
+            );
+          } catch (sendError) {
+            telegramLogger.error(
+              "发送错误提示消息失败",
+              sendError instanceof Error ? sendError : undefined,
+              { sourceContextId, userId },
+              userId,
+            );
+          }
+        }
+      }
+    });
+
+    // 错误处理
+    bot.catch((err, ctx) => {
+      console.log(`[Telegram][调试] ❌ Bot 错误:`, err);
+      telegramLogger.error(
+        "Telegram Bot 错误",
+        err instanceof Error ? err : undefined,
+        {
+          chatId: ctx?.chat?.id,
+          userId: ctx?.from?.id,
+          messageId: ctx?.message?.message_id,
+        },
+      );
+    });
+
+    // 添加更多事件监听器用于调试
+    bot.on("message", (ctx) => {
+      console.log(`[Telegram][调试] 📨 收到任何类型的消息:`, {
+        from: ctx.from?.id,
+        chat: ctx.chat?.id,
+        hasText: "text" in ctx.message!,
+        messageId: ctx.message.message_id,
+      });
+    });
+
+    // 启动 Bot - 必须在所有事件监听器设置完成后
+    console.log(`[Telegram][调试] 🚀 启动 Bot...`);
+    try {
+      await bot.launch();
+      console.log(`[Telegram][调试] ✅ bot.launch() 成功完成`);
+      console.log(`✅ Telegram Bot 已成功连接并准备就绪！`);
+      console.log(`   - 配置的主人 ID: ${config.telegramOwnerId || "未设置"}`);
+      console.log(`   - 消息处理分数阈值: ${processingThreshold}`);
+      console.log("👂 正在监听消息...");
+      console.log("----------------------------------------------");
+    } catch (launchError) {
+      console.log(`[Telegram][调试] ❌ bot.launch() 失败:`, launchError);
+      throw launchError;
     }
-  });
 
-  // 错误处理
-  bot.catch((err, _ctx) => {
-    console.error(`[Telegram] Bot 错误:`, err);
-  });
+    // 优雅停止 - 使用 Deno 的信号处理
+    const cleanup = () => {
+      if (!isShuttingDown) {
+        isShuttingDown = true;
+        telegramLogger.info("正在停止 Telegram Bot...");
+        bot.stop("SIGINT");
+        telegramLogger.info("Telegram Bot 已停止");
+      }
+    };
 
-  // 优雅停止
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    // 使用 Deno 的信号监听器
+    try {
+      Deno.addSignalListener("SIGINT", cleanup);
+      if (Deno.build.os !== "windows") {
+        Deno.addSignalListener("SIGTERM", cleanup);
+      }
+    } catch (error) {
+      telegramLogger.warn(
+        "无法添加信号监听器",
+        undefined,
+        undefined,
+        undefined,
+      );
+      console.warn("信号监听器错误:", error);
+    }
+
+    performanceMonitor.endOperation(operationId, "Telegram启动", "Bot初始化");
+    telegramLogger.info("Telegram Bot 启动完成");
+  } catch (error) {
+    performanceMonitor.endOperation(operationId, "Telegram启动", "Bot初始化");
+    telegramLogger.critical(
+      "Telegram Bot 启动失败",
+      error instanceof Error ? error : undefined,
+    );
+    throw error;
+  }
 }
 
 // --- 5. 历史记录获取功能 ---
@@ -447,13 +645,11 @@ export function fetchTelegramHistory(
   }
 
   let chatId: string | null = null;
-  let _isPrivate = false;
 
   if (telegramContextId.startsWith(DEFAULT_CONTEXT_PREFIX_CHAT)) {
     chatId = telegramContextId.substring(DEFAULT_CONTEXT_PREFIX_CHAT.length);
   } else if (telegramContextId.startsWith(DEFAULT_CONTEXT_PREFIX_PRIVATE)) {
     chatId = telegramContextId.substring(DEFAULT_CONTEXT_PREFIX_PRIVATE.length);
-    _isPrivate = true;
   } else {
     console.error(
       `[Telegram] Invalid telegramContextId format: ${telegramContextId}`,

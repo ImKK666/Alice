@@ -5,13 +5,11 @@
  * 负责处理用户在控制台的输入、特殊命令，并调用核心 RAG 逻辑。
  */
 
-import { getStm, handleIncomingMessage, kv } from "./main.ts"; // 确保 kv 仍然从 main 导出或在这里直接初始化
+import { getStm, kvHolder } from "./main.ts"; // 使用 kvHolder 而不是 kv
+import { handleIncomingMessage } from "./message_handler.ts";
 import type { ChatMessageInput } from "./memory_processor.ts"; // 导入类型
 // 导入时间感知模块的函数，用于清除时间上下文
-import {
-  getTemporalContext,
-  updateTemporalContext,
-} from "./time_perception.ts";
+import { getTemporalContext } from "./time_perception.ts";
 // --- 修改：导入新的社交认知模块 ---
 import { getSocialCognitionManager } from "./social_cognition.ts"; // 导入新的社交认知管理器
 // import { // 旧的社交动态导入 (注释掉)
@@ -20,7 +18,7 @@ import { getSocialCognitionManager } from "./social_cognition.ts"; // 导入新�
 // } from "./social_dynamics.ts";
 // --- 修改结束 ---
 // 导入身体状态模块的函数，用于清除身体状态
-import { getBodyState, updateBodyState } from "./virtual_embodiment.ts";
+import { getBodyState } from "./virtual_embodiment.ts";
 
 // --- 新增：获取社交认知管理器实例 ---
 const socialCognition = getSocialCognitionManager();
@@ -99,7 +97,7 @@ export async function startCli(): Promise<void> {
             );
             break;
           case "/stm": {
-            if (!kv) {
+            if (!kvHolder.instance) {
               console.log("⚠️ STM (KV) 未初始化。");
               break;
             }
@@ -117,39 +115,47 @@ export async function startCli(): Promise<void> {
             break;
           }
           case "/clearstm": {
-            if (!kv) {
+            if (!kvHolder.instance) {
               console.log("⚠️ STM (KV) 未初始化。");
               break;
             }
-            await kv.delete(["stm", currentRAGContextId]);
+            await kvHolder.instance.delete(["stm", currentRAGContextId]);
             console.log(`✅ STM 已清除 (${currentRAGContextId})。`);
             break;
           }
           case "/clearstate": {
-            if (!kv) {
+            if (!kvHolder.instance) {
               console.log("⚠️ KV 未初始化，无法清除状态。");
               break;
             }
             console.log(
               `⚠️ 准备清除用户 ${currentUserId} 在上下文 ${currentRAGContextId} 的所有状态...`,
             );
-            await kv.delete(["stm", currentRAGContextId]);
+            await kvHolder.instance.delete(["stm", currentRAGContextId]);
             console.log("  - STM 已清除。");
-            await kv.delete([
+            await kvHolder.instance.delete([
               "temporal_context",
               currentUserId,
               currentRAGContextId,
             ]);
             console.log("  - 时间上下文已清除。");
-            await kv.delete(["body_state", currentUserId, currentRAGContextId]);
+            await kvHolder.instance.delete([
+              "body_state",
+              currentUserId,
+              currentRAGContextId,
+            ]);
             console.log("  - 虚拟身体状态已清除。");
             // --- 修改：使用新的社交认知模块的键前缀来清除关系状态 ---
             // 注意：关系状态现在是 Alice <-> entityId，所以清除时需要用 ('alice', currentUserId)
             const aliceId = "alice"; // 假设 Alice 的固定 ID 是 'alice'
-            await kv.delete(["social_relationship", aliceId, currentUserId]);
+            await kvHolder.instance.delete([
+              "social_relationship",
+              aliceId,
+              currentUserId,
+            ]);
             console.log(`  - 与用户 ${currentUserId} 的关系状态已重置。`);
             // --- 修改结束 ---
-            await kv.delete([
+            await kvHolder.instance.delete([
               "last_wandering_time",
               currentUserId,
               currentRAGContextId,
@@ -159,7 +165,7 @@ export async function startCli(): Promise<void> {
             break;
           }
           case "/getstate": {
-            if (!kv) {
+            if (!kvHolder.instance) {
               console.log("⚠️ KV 未初始化，无法获取状态。");
               break;
             }
@@ -179,14 +185,14 @@ export async function startCli(): Promise<void> {
                 stateData = await getTemporalContext(
                   currentUserId,
                   currentRAGContextId,
-                  kv,
+                  kvHolder.instance,
                 );
                 break;
               case "body":
                 stateData = await getBodyState(
                   currentUserId,
                   currentRAGContextId,
-                  kv,
+                  kvHolder.instance,
                 );
                 break;
               case "relationship":

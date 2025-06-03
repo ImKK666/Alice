@@ -9,6 +9,9 @@ import {
   type MemoryType,
   upsertMemoryPoints,
 } from "./qdrant_client.ts"; // 注意: 导入新添加的类型
+
+// 重新导出 MemoryType 以供其他模块使用
+export type { MemoryType };
 import { config } from "./config.ts";
 
 /**

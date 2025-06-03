@@ -20,7 +20,7 @@ import {
   type MemoryType, // 导入 MemoryType 类型
   type MessageAnalysisResult,
 } from "./memory_processor.ts"; // 导入 LTM 分析函数和结果类型
-import { handleIncomingMessage } from "./main.ts"; // 确保 main 导出了 handleIncomingMessage
+import { handleIncomingMessage } from "./message_handler.ts"; // 确保 main 导出了 handleIncomingMessage
 // 注意：移除了 jiebaCut 的导入，因为不再需要分词来匹配关键词
 
 // --- 1. Define discordClient ---
