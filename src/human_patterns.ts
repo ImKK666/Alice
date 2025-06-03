@@ -10,7 +10,7 @@
  * 4. 半结构化思考：自然的思维流和表达方式
  */
 
-import { llm } from "./llm.ts";
+import { llm, invokeLLM, LLMRequestType, LLMRequestPriority } from "./llm.ts";
 import { config } from "./config.ts";
 // 导入语言模板和模板选择器
 import {
@@ -716,10 +716,15 @@ ${text}
 
   try {
     // 调用LLM进行处理
-    const response = await llm.invoke(prompt);
-    const humanizedContent = typeof response === "string"
-      ? response
-      : (response.content as string);
+    const humanizedContent = await invokeLLM(
+      prompt,
+      LLMRequestType.HUMANIZATION,
+      LLMRequestPriority.NORMAL, // 正常优先级，可以并行处理
+      {
+        temperature: 0.8, // 较高温度增加自然度
+        timeout: 20000,   // 20秒超时
+      }
+    );
 
     // 清理可能的前缀或后缀
     const cleanedContent = humanizedContent

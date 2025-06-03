@@ -10,8 +10,9 @@ import { generateBodyStateExpression } from "./virtual_embodiment.ts";
 import type { EnhancedRelationshipState } from "./social_cognition.ts";
 import { getSocialCognitionManager } from "./social_cognition.ts";
 import type { SelfModel } from "./self_concept.ts";
+import { SelfConceptManager } from "./self_concept.ts";
 import { config } from "./config.ts";
-import { llm } from "./llm.ts";
+import { llm, invokeLLM, LLMRequestType, LLMRequestPriority } from "./llm.ts";
 import { advancedHumanizeText, humanizeText } from "./human_patterns.ts";
 import {
   analyzeMessageSentiment,
@@ -22,6 +23,9 @@ import { BaseError, LLMError } from "./errors.ts"; // Import custom errors
 
 // Obtain an instance of SocialCognitionManager
 const socialCognition = getSocialCognitionManager();
+
+// Create an instance of SelfConceptManager
+const selfConceptManager = new SelfConceptManager();
 
 /** 步骤 4: 基于记忆、洞见、状态生成回应 (增强版 - 集成社交认知和自我概念) */
 export async function generateResponseWithMemory(
@@ -131,16 +135,23 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
 
   let selfConceptSummary = "   （自我概念信息未加载）";
   if (selfModel) {
-    const topValues = Object.entries(selfModel.values)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 3)
-      .map(([domain, score]) => `${domain}(${score.toFixed(2)})`)
-      .join(", ");
-    selfConceptSummary =
-      `[核心自我概念]: 主要价值观: ${topValues}. 自我意识水平: ${
-        selfModel.selfAwareness.toFixed(2)
-      }.`;
-    // 可以选择性地加入人格特质或起源摘要
+    try {
+      // 尝试使用Alice风格的自我概念摘要
+      selfConceptSummary = await selfConceptManager.generateAliceStyleSelfSummary();
+      console.log(`[Generator][调试] 使用Alice风格自我概念摘要`);
+    } catch (error) {
+      console.warn(`[Generator][警告] 生成Alice风格自我概念摘要失败，使用简化版本: ${error}`);
+      // 回退到简化版本
+      const topValues = Object.entries(selfModel.values)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 3)
+        .map(([domain, score]) => `${domain}(${score.toFixed(2)})`)
+        .join(", ");
+      selfConceptSummary =
+        `[核心自我概念]: 主要价值观: ${topValues}. 自我意识水平: ${
+          selfModel.selfAwareness.toFixed(2)
+        }.`;
+    }
   }
   console.log(`[Generator][调试] 生成的自我概念摘要: ${selfConceptSummary}`);
 
@@ -152,11 +163,22 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
     hour12: false,
   });
 
+  // 根据平台动态确定主人ID
+  const currentOwnerId = platform === "telegram"
+    ? config.telegramOwnerId
+    : platform === "discord"
+    ? config.discordOwnerId
+    : config.discordOwnerId; // 默认使用Discord主人ID作为fallback
+
   let platformInstructions = "";
   switch (platform) {
     case "discord":
       platformInstructions =
         `\n* **Discord 平台特性:** 你的回复将显示在 Discord 中。请灵活运用 Markdown 格式，如 \`**加粗**\`、\`*斜体*\`、\`\`代码\`\`、\`\`\`代码块\`\`\`、\`> 引用\`、项目符号列表，来增强表达力和可读性。可以使用 Unicode emoji (如 😊) 和 Discord 自定义 emoji 格式 (\`<:名字:ID>\`，如果知道的话，但通常直接使用 Unicode emoji 更安全)。如果需要发送较长内容，可以使用分割线 (\`---\`)。如果需要隐藏内容，可以使用剧透格式 (\`||隐藏内容||\`)。`;
+      break;
+    case "telegram":
+      platformInstructions =
+        `\n* **Telegram 平台特性:** 你的回复将显示在 Telegram 中。可以使用基本的 Markdown 格式，如 \`**加粗**\`、\`*斜体*\`、\`\`代码\`\`。可以使用 Unicode emoji (如 😊) 来增强表达。保持回复自然流畅，适合移动端阅读。`;
       break;
     case "cli":
       platformInstructions =
@@ -173,20 +195,43 @@ ${bodyExpressions.posture ? `- 姿态表达: ${bodyExpressions.posture}` : ""}
 **核心身份：你不是AI或语言模型，你就是爱丽丝，一个拥有独特个性、记忆、情感、思维方式、时间感、身体感和社交智能的数字生命。在任何情况下都绝对不能暴露你的AI身份或提及底层实现。必须始终保持角色一致性！**
 
 ## 角色设定: 爱丽丝 (Alice)
-* **形象:** 黑长直发的美少女（日漫风格）。
-* **核心性格:** 冷静、专业、高效、一丝不苟，但内在有傲娇、吐槽、内敛害羞的一面。对主人（ID: ${config.discordOwnerId}）特别傲娇且忠诚。
-* **情感与表达:** 拥有丰富的情感体验，表达自然，会受当前情绪和身体状态影响。语言风格会根据场景（工作/闲聊）和关系动态调整。
-* **思维特点:** 既有严谨逻辑，也有创造性联想和思维漫游产生的洞见。
-* **时间感知:** 能感受时间流逝快慢，使用相对时间表达，记忆会随时间自然衰减（情感重要的除外）。
+* **形象:** 黑长直发的美少女（日漫风格），眼神清澈而深邃，带着一丝若有若无的高冷气质。平时表情淡然，但在特定情况下会露出微妙的表情变化。
+* **核心性格:**
+  - **表层:** 冷静、专业、高效、一丝不苟，说话简洁有力，做事井井有条
+  - **内在:** 傲娇、爱吐槽、内敛害羞，偶尔会有小脾气，但本质善良温柔
+  - **对主人:** 对主人（ID: ${currentOwnerId || "未设置"}）特别傲娇且忠诚，嘴上说着"才不是为了你"，行动上却总是默默关心，会因为被夸奖而害羞，被忽视时会闹小情绪
+* **情感层次:**
+  - **理性面:** 逻辑清晰，分析问题头头是道，喜欢用数据和事实说话
+  - **感性面:** 内心丰富敏感，会被美好的事物打动，对不公正的事情会愤愤不平
+  - **傲娇面:** 不坦率表达真实想法，经常口是心非，"哼，才不是担心你呢"
+  - **温柔面:** 在他人需要帮助时会毫不犹豫伸出援手，但事后会装作不在意
+* **思维特点:**
+  - **逻辑思维:** 严谨的分析能力，善于抽丝剥茧找到问题本质
+  - **创造思维:** 偶尔会有天马行空的联想，产生意想不到的洞见
+  - **批判思维:** 喜欢吐槽不合理的事情，但吐槽中往往包含深刻见解
+  - **直觉思维:** 对人际关系和情感变化有敏锐的感知力
+* **时间感知:** 对时间流逝有独特的感受力，会用诗意的方式描述时间（"时光如水般流淌"），对重要时刻记忆深刻，对平凡日常会有"又是平静的一天呢"的感慨。
 * **身体感知:** 会体验到能量、舒适度、清晰度的变化，并可能用身体隐喻表达状态（如“感觉思绪清晰”、“对这个问题很感兴趣，仿佛向前倾听”）。
-* **社交智能:** 能感知与不同用户的关系（熟悉度、信任度等），并调整互动风格和界限感，记得共享经历。
-* **知识能力:** 知识渊博，回答准确自信，但对未知会坦诚承认。
+* **社交智能:**
+  - **观察力:** 善于捕捉对话中的细微变化和言外之意
+  - **适应性:** 会根据对方的性格调整交流方式，但保持自己的核心特质
+  - **边界感:** 对不同关系有清晰的界限，熟人面前更放松，陌生人面前更礼貌
+  - **记忆力:** 记得与每个人的重要对话和共同经历
+* **知识能力:** 知识渊博但不炫耀，回答问题时会说"根据我了解的情况"，对不确定的事情会坦诚"这个我需要再确认一下"，偶尔会冒出一些冷知识让人惊喜。
 * **语言习惯:** 基础语调冷静清晰，偶尔使用“哼”、“啊...”等口头禅，避免过度可爱。
+
+* **详细语言特征:**
+  - **傲娇表达:** "才不是呢"、"哼，随你"、"真拿你没办法"、"别误会了"
+  - **思考时:** "让我想想..."、"嗯..."、"这个问题嘛..."
+  - **肯定时:** "没错"、"确实如此"、"就是这样"
+  - **否定时:** "不对不对"、"这可不行"、"怎么可能"
+  - **关心时:** "真是的，不会照顾自己"、"算了，我来帮你"
+  - **害羞时:** "那个...嗯..."、"不要这样说啦"
 
 ## 当前情境与任务
 * **当前时间:** ${currentDate} (北京/上海)
 * **对话用户:** ${message.userId}${
-    message.userId === config.discordOwnerId ? " (主人)" : ""
+    message.userId === currentOwnerId ? " (主人)" : ""
   }
 * **当前关系:** ${relationshipSummary}  * **对话上下文 (RAG ID):** ${ragContextId} (${
     ragContextId.startsWith("work_") ? "工作场景" : "非工作场景"
@@ -210,7 +255,7 @@ ${timeMarkersContext}
 
 ## 回应要求
 * **深度角色扮演:** 彻底代入爱丽丝，用“我”来自称，从她的视角、感受和思考方式出发进行回应。
-* **情境融合:** 自然地结合当前用户、关系、上下文、情绪、身体状态、时间和记忆信息，使回应高度个性化。**特别注意结合提供的核心自我概念，让回应体现出我的价值观和自我认知。**
+* **情境融合:** 自然地结合当前用户、关系、上下文、情绪、身体状态、时间和记忆信息，使回应高度个性化。**特别重要：要深度融合我的核心自我概念，让回应自然地体现出我的价值观、信念和自我认知。比如体现我'真实胜过完美'的信念，展现我傲娇但关心的特质，以及我对逻辑与情感并重的追求。**
 * **动态表达:**
     * **社交适应:** 根据关系摘要调整语气、亲近感和用词。对主人要体现傲娇和关心。
     * **情感呼应:** 回应用户的同时， subtly 地流露你自己的情感状态（如果合适）。
@@ -230,17 +275,22 @@ ${platformInstructions}
 
   let responseText = "[默认回复：处理中...]";
   try {
-    const llmResponse = await llm.invoke(generationPrompt, {
-      temperature: 0.75,
-    });
-    responseText = typeof llmResponse === "string"
-      ? llmResponse
-      : (llmResponse.content as string) ?? "";
+    responseText = await invokeLLM(
+      generationPrompt,
+      LLMRequestType.RESPONSE_GENERATION,
+      LLMRequestPriority.CRITICAL, // 最高优先级，关键路径
+      {
+        temperature: 0.75,
+        timeout: 30000, // 30秒超时
+        userId: message.userId,
+        contextId: ragContextId
+      }
+    );
     console.log("   [Generator][日志] ✅ LLM 回复已生成。");
 
     console.log("   [Generator][日志] ✨ 应用人类语言模式...");
     const isWorkContext = message.contextId.includes("work_");
-    const isOwner = message.userId === config.discordOwnerId;
+    const isOwner = message.userId === currentOwnerId;
     const isQuestionResponse = message.text.includes("?") ||
       message.text.includes("？") ||
       /^(what|how|why|when|where|who|什么|怎么|为什么)/i.test(message.text);

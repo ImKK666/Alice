@@ -17,6 +17,7 @@ import {
 import { handleIncomingMessage } from "./message_handler.ts";
 import { createModuleLogger } from "./utils/logger.ts";
 import { PerformanceMonitor } from "./utils/performance.ts";
+import { executeParallelTasks } from "./utils/async_utils.ts";
 import { BaseError } from "./errors.ts";
 
 // --- 1. 定义 Telegram 客户端 ---
@@ -396,9 +397,9 @@ export async function startTelegram(): Promise<void> {
         }
       }
 
-      // --- 3. 处理消息 ---
+      // --- 3. 🚀 异步优化的消息处理 ---
       if (shouldProcess) {
-        console.log(`[Telegram][调试] 🚀 开始处理消息...`);
+        console.log(`[Telegram][调试] 🚀 开始异步优化的消息处理...`);
         const messageOperationId = `telegram_message_${Date.now()}_${userId}`;
         performanceMonitor.startOperation(
           messageOperationId,
@@ -421,36 +422,72 @@ export async function startTelegram(): Promise<void> {
         const processStartTime = Date.now();
 
         try {
-          // 发送"正在输入"状态
-          console.log(`[Telegram][调试] 📝 发送"正在输入"状态...`);
-          await ctx.sendChatAction("typing");
+          // 🔥 阶段1：立即响应 - 快速状态反馈
+          console.log(`[Telegram][异步] 📝 阶段1: 立即状态反馈...`);
+          const immediateActions = [
+            {
+              name: "发送输入状态",
+              task: () => ctx.sendChatAction("typing"),
+              timeout: 3000,
+              priority: 1,
+              fallbackValue: null
+            }
+          ];
 
           // 确定 RAG 上下文
-          const currentRAGContextId = chatContextMap.get(sourceContextId) ||
-            sourceContextId;
+          const currentRAGContextId = chatContextMap.get(sourceContextId) || sourceContextId;
 
-          console.log(`[Telegram][调试] 🧠 准备调用核心 RAG 逻辑:`);
+          console.log(`[Telegram][异步] 🧠 准备异步处理流程:`);
           console.log(`  源上下文ID: ${sourceContextId}`);
           console.log(`  当前RAG上下文ID: ${currentRAGContextId}`);
           console.log(`  平台: telegram`);
 
-          // 调用核心 RAG 逻辑
-          console.log(`[Telegram][调试] 🔄 调用 handleIncomingMessage...`);
-          const result = await handleIncomingMessage(
+          // 执行立即响应
+          const immediateResults = await executeParallelTasks(immediateActions, {
+            timeout: 5000
+          });
+          console.log(`[Telegram][异步] ✅ 立即响应完成 (${immediateResults[0].duration}ms)`);
+
+          // 🔥 阶段2：核心处理 - 异步生成回复
+          console.log(`[Telegram][异步] 🔄 阶段2: 开始核心处理...`);
+
+          // 创建一个Promise来处理核心逻辑，同时继续发送状态更新
+          const coreProcessingPromise = handleIncomingMessage(
             analysisInput,
             currentRAGContextId,
             "telegram",
           );
-          console.log(`[Telegram][调试] ✅ handleIncomingMessage 完成:`, {
-            newContextId: result.newContextId,
-            responseLength: result.responseText?.length || 0,
-            hasResponse: !!result.responseText?.trim(),
-          });
+
+          // 🔥 阶段3：状态保持 - 定期发送"正在输入"状态
+          const statusUpdateInterval = setInterval(async () => {
+            try {
+              await ctx.sendChatAction("typing");
+              console.log(`[Telegram][异步] 📝 状态更新: 继续输入中...`);
+            } catch (err) {
+              console.warn(`[Telegram][异步] ⚠️ 状态更新失败:`, err);
+            }
+          }, 4000); // 每4秒更新一次状态
+
+          // 等待核心处理完成
+          let result;
+          try {
+            result = await coreProcessingPromise;
+            clearInterval(statusUpdateInterval);
+            console.log(`[Telegram][异步] ✅ 核心处理完成:`, {
+              newContextId: result.newContextId,
+              responseLength: result.responseText?.length || 0,
+              hasResponse: !!result.responseText?.trim(),
+              totalDuration: Date.now() - processStartTime
+            });
+          } catch (coreError) {
+            clearInterval(statusUpdateInterval);
+            throw coreError;
+          }
 
           // 更新 RAG 上下文映射
           if (result.newContextId !== currentRAGContextId) {
             console.log(
-              `[Telegram][调试] 🔄 RAG 上下文已更新: ${sourceContextId} -> ${result.newContextId}`,
+              `[Telegram][异步] 🔄 RAG 上下文已更新: ${sourceContextId} -> ${result.newContextId}`,
             );
             chatContextMap.set(sourceContextId, result.newContextId);
           } else {
@@ -459,43 +496,72 @@ export async function startTelegram(): Promise<void> {
             }
           }
 
-          // 发送回复
+          // 🔥 阶段4：智能回复发送 - 异步分段发送
           const finalResponse = result.responseText;
-          console.log(`[Telegram][调试] 📤 准备发送回复:`);
+          console.log(`[Telegram][异步] 📤 阶段4: 准备智能发送回复:`);
           console.log(`  回复长度: ${finalResponse?.length || 0}`);
           console.log(
-            `  有效回复: ${!!(finalResponse &&
-              finalResponse.trim().length > 0)}`,
+            `  有效回复: ${!!(finalResponse && finalResponse.trim().length > 0)}`,
           );
 
           if (finalResponse && finalResponse.trim().length > 0) {
             const messageParts = splitMessage(finalResponse);
             console.log(
-              `[Telegram][调试] 📝 分割为 ${messageParts.length} 个部分`,
+              `[Telegram][异步] 📝 分割为 ${messageParts.length} 个部分`,
             );
 
-            for (let i = 0; i < messageParts.length; i++) {
-              const part = messageParts[i];
-              if (part.trim().length === 0) continue;
-
+            // 🔥 并行发送优化：如果只有一个部分，直接发送；多个部分则异步发送
+            if (messageParts.length === 1) {
+              // 单个消息，直接发送
               try {
-                console.log(
-                  `[Telegram][调试] 📨 发送第 ${
-                    i + 1
-                  }/${messageParts.length} 部分 (${part.length} 字符)...`,
-                );
-                await ctx.reply(part);
-                console.log(`[Telegram][调试] ✅ 第 ${i + 1} 部分发送成功`);
-                await new Promise((resolve) => setTimeout(resolve, 100));
+                console.log(`[Telegram][异步] 📨 发送单个回复 (${messageParts[0].length} 字符)...`);
+                await ctx.reply(messageParts[0]);
+                console.log(`[Telegram][异步] ✅ 单个回复发送成功`);
               } catch (sendError) {
-                console.error(
-                  `[Telegram][调试] ❌ 发送第 ${i + 1} 部分失败:`,
-                  sendError,
-                );
-                break;
+                console.error(`[Telegram][异步] ❌ 发送回复失败:`, sendError);
+                telegramLogger.error("发送回复失败", sendError instanceof Error ? sendError : undefined, { userId, chatId }, userId);
+              }
+            } else {
+              // 多个部分，使用异步发送任务
+              const sendTasks = messageParts
+                .filter(part => part.trim().length > 0)
+                .map((part, index) => ({
+                  name: `发送回复部分${index + 1}`,
+                  task: async () => {
+                    // 为后续部分添加延迟，避免过快发送
+                    if (index > 0) {
+                      await new Promise(resolve => setTimeout(resolve, 200 * index));
+                    }
+                    await ctx.reply(part);
+                    return `第${index + 1}部分发送成功`;
+                  },
+                  timeout: 10000,
+                  priority: index + 1, // 按顺序优先级
+                  fallbackValue: `第${index + 1}部分发送失败`
+                }));
+
+              console.log(`[Telegram][异步] 🔄 开始并行发送 ${sendTasks.length} 个回复部分...`);
+              const sendResults = await executeParallelTasks(sendTasks, {
+                timeout: 30000 // 总超时30秒
+              });
+
+              // 统计发送结果
+              const successCount = sendResults.filter(r => r.success).length;
+              const failureCount = sendResults.length - successCount;
+
+              console.log(`[Telegram][异步] 📊 回复发送统计:`);
+              console.log(`  成功: ${successCount}/${sendResults.length}`);
+              console.log(`  失败: ${failureCount}/${sendResults.length}`);
+
+              if (failureCount > 0) {
+                telegramLogger.warn(`部分回复发送失败`, {
+                  userId, chatId, successCount, failureCount,
+                  failures: sendResults.filter(r => !r.success).map(r => r.taskName)
+                }, userId);
               }
             }
-            console.log(`[Telegram][调试] 🎉 所有回复部分发送完成`);
+
+            console.log(`[Telegram][异步] 🎉 回复发送流程完成`);
           } else {
             console.log(
               `[Telegram][调试] ⚠️ RAG 返回了空响应，不发送消息。`,

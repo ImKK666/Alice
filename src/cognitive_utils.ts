@@ -1,6 +1,6 @@
 // src/cognitive_utils.ts
 
-import { llm } from "./llm.ts";
+import { llm, invokeLLM, LLMRequestType, LLMRequestPriority } from "./llm.ts";
 import type { EmotionDimension } from "./qdrant_client.ts";
 import { config } from "./config.ts";
 import { BaseError, LLMError } from "./errors.ts";
@@ -25,10 +25,16 @@ export async function analyzeMessageSentiment(text: string): Promise<{
 `;
 
   try {
-    const response = await llm.invoke(sentimentPrompt);
-    const responseContent = typeof response === "string"
-      ? response
-      : (response.content as string);
+    const responseContent = await invokeLLM(
+      sentimentPrompt,
+      LLMRequestType.SENTIMENT_ANALYSIS,
+      LLMRequestPriority.HIGH,
+      {
+        temperature: 0.3, // 较低温度确保一致性
+        timeout: 15000,   // 15秒超时
+      }
+    );
+
     if (!responseContent) {
       console.warn("[CognitiveUtils][日志] 情感分析 LLM 返回空内容。");
       throw new LLMError("LLM returned empty content for sentiment analysis", {
@@ -195,10 +201,16 @@ export async function detectImportantMessage(messageText: string): Promise<
 重要示例: {"important": true, "description": "确认项目启动", "significance": 0.8, "is_milestone": true}
 `;
   try {
-    const response = await llm.invoke(prompt);
-    const content = typeof response === "string"
-      ? response
-      : (response.content as string);
+    const content = await invokeLLM(
+      prompt,
+      LLMRequestType.IMPORTANCE_DETECTION,
+      LLMRequestPriority.LOW, // 低优先级，可以延迟处理
+      {
+        temperature: 0.2, // 低温度确保判断一致性
+        timeout: 10000,   // 10秒超时
+      }
+    );
+
     if (!content) {
       console.warn("[CognitiveUtils][日志] 检测重要消息 LLM 返回空内容。");
       throw new LLMError(
